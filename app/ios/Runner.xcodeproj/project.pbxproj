@@ -794,10 +794,10 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		4E0000212BE8000000000001 /* XCRemoteSwiftPackageReference "CoreML-LLM" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/john-rocky/CoreML-LLM";
+			repositoryURL = "https://github.com/caozeze/CoreML-LLM";
 			requirement = {
-				kind = exactVersion;
-				version = 1.7.0;
+				branch = "fix/x86_64-simulator-float16-conversion";
+				kind = branch;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

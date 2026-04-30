@@ -10,6 +10,11 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\scripts\setup-windows-dev.ps1
 ```
 
+The Windows setup defaults toolchains and caches to
+`D:\DevTools\foreverhealth` to avoid filling the C drive. Use
+`.\scripts\setup-windows-dev.ps1 -ToolRoot "E:\DevTools\foreverhealth"` if a
+different drive is preferred.
+
 ## macOS Setup
 
 Xcode is handled separately. For Flutter/FVM/uv/Python setup:

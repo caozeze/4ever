@@ -134,6 +134,19 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\scripts\setup-windows-dev.ps1
 ```
 
+By default, the Windows setup stores the project toolchain and caches under:
+
+```text
+D:\DevTools\foreverhealth
+```
+
+This keeps Dart, pub cache, FVM cache, Flutter SDKs, and uv-managed Python
+installs off the C drive. To use another drive or directory:
+
+```powershell
+.\scripts\setup-windows-dev.ps1 -ToolRoot "E:\DevTools\foreverhealth"
+```
+
 To also install Android Studio:
 
 ```powershell
@@ -205,3 +218,27 @@ If the backend uses `pyproject.toml`, prefer:
 ```powershell
 uv sync
 ```
+
+## Codemagic iOS CI
+
+The repository includes `codemagic.yaml` at the repository root. The first
+workflow is intentionally unsigned:
+
+```text
+ios-unsigned-ci
+```
+
+Purpose:
+
+- verify Flutter dependencies, analysis, and tests on Codemagic;
+- resolve Swift Package dependencies on macOS/Xcode;
+- verify the iOS simulator build;
+- verify an iOS device build without signing.
+
+This workflow does not require Apple Developer signing assets. It is the first
+CI gate for the CoreML-LLM fork branch and iOS project configuration.
+
+After an Apple Developer Program account is available, add a second signed
+workflow for TestFlight or Ad Hoc distribution. That workflow should configure
+Codemagic iOS code signing with an App Store Connect API key, certificate, and
+provisioning profile for the app bundle identifier.

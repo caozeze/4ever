@@ -414,3 +414,41 @@ LlmRuntime.initialize
 generateOnce("Reply with the single word: ready")
 expected output contains "ready"
 ```
+
+## 13. Execution Update
+
+### 2026-04-29
+
+Fork branch work completed:
+
+- Created fork: `https://github.com/caozeze/CoreML-LLM`.
+- Created fork branch: `fix/x86_64-simulator-float16-conversion`.
+- Applied the minimal `Float16 -> Float` fallback in
+  `Sources/CoreMLLLM/ChunkedEngine.swift`.
+- Pushed commit:
+  `e95c10e343736570134bd690a5a9cd4c579e17c8`.
+- Opened upstream PR:
+  `https://github.com/john-rocky/CoreML-LLM/pull/153`.
+- Updated this app's Swift Package dependency to point at the fork branch.
+
+Remaining verification:
+
+```text
+Intel Mac:
+flutter build ios --simulator --debug
+flutter build ios --debug --no-codesign
+
+Apple Silicon Mac:
+flutter build ios --simulator --debug
+flutter build ios --debug --no-codesign
+
+Shared:
+flutter analyze
+flutter test
+
+Real iPhone:
+prepare Gemma 4 E2B CoreML bundle
+LlmRuntime.initialize
+generateOnce("Reply with the single word: ready")
+expected output contains "ready"
+```
