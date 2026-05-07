@@ -49,9 +49,15 @@ macOS and Xcode. Windows is used for shared Flutter/Dart and documentation work.
 
 ## Architecture Notes
 
-- First demo target: download/verify/load Gemma 4 E4B/E2B and complete a local chat.
+- First demo target: iOS App prepares Gemma 4 E2B Core ML in-app, loads it
+  through the unified `LlmRuntime`, runs a smoke test, and answers a local text
+  prompt from the Flutter UI.
 - First release direction: offline-only app. `server/` is future optional and not part of the current demo path.
 - Current model-management foundation is implemented in Dart and covered by tests.
+- Apple Health sample import, demographic/clinical import, diet/photo calorie
+  analysis, chronic condition workflows, sleep management, active reminders, and
+  daily/weekly reports are planned/future product capabilities, not part of the
+  current iOS model MVP.
 - [Agent Skills Architecture](docs/AGENT_SKILLS_ARCHITECTURE.md)
 - [Model Management Implementation Plan](docs/MODEL_MANAGEMENT_IMPLEMENTATION_PLAN.md)
 - [Environment Requirements](docs/ENVIRONMENT_REQUIREMENTS.md)
@@ -65,5 +71,7 @@ cd app
 ..\.fvm\flutter_sdk\bin\flutter.bat test
 ```
 
-Latest manual result: analyze passed, model-management tests passed, and full
-Flutter tests passed.
+Current acceptance requires runtime evidence: a built iOS app must prepare the
+Core ML bundle, mark the model registry ready, pass the `ready` smoke test, and
+return a real model answer from the Flutter page. Local verification may require
+a machine with FVM/Flutter and macOS/Xcode or the Codemagic iOS workflow.

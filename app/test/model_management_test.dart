@@ -3,7 +3,10 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gemma_local/application/ai/demo_chat_controller.dart';
+import 'package:gemma_local/application/ai/generation_budget_policy.dart';
 import 'package:gemma_local/application/ai/model/device_capabilities_reader.dart';
+import 'package:gemma_local/application/ai/model/model_artifact_preparer.dart';
 import 'package:gemma_local/application/ai/model/model_catalog.dart';
 import 'package:gemma_local/application/ai/model/model_file_downloader.dart';
 import 'package:gemma_local/application/ai/model/model_lifecycle_service.dart';
@@ -15,7 +18,9 @@ import 'package:gemma_local/core/native/generated/device_capabilities_api.g.dart
     as pigeon;
 import 'package:gemma_local/data/model/asset_model_catalog.dart';
 import 'package:gemma_local/data/model/dart_model_file_verifier.dart';
+import 'package:gemma_local/data/model/hugging_face_model_repository.dart';
 import 'package:gemma_local/data/model/json_model_registry_store.dart';
+import 'package:gemma_local/data/model/model_artifact_preparers.dart';
 import 'package:gemma_local/domain/ai/device_capabilities.dart';
 import 'package:gemma_local/domain/ai/llm_generation_config.dart';
 import 'package:gemma_local/domain/ai/llm_model_config.dart';
@@ -212,8 +217,10 @@ void main() {
         deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
         selectionService: const ModelSelectionService(),
         storagePaths: _FakeStoragePaths(p.join(tempDir.path, model.fileName)),
-        downloader: const _FakeDownloader(),
-        verifier: const DartModelFileVerifier(),
+        artifactPreparer: const FileModelArtifactPreparer(
+          downloader: _FakeDownloader(),
+          verifier: DartModelFileVerifier(),
+        ),
         registryStore: registry,
         runtime: runtime,
       );
@@ -236,6 +243,290 @@ void main() {
       expect(runtime.initializedConfig?.revision, 'commit');
       expect((await registry.read(model.id))?.status, ModelInstallStatus.ready);
     },
+  );
+
+  test(
+    'CoreML bundle preparer downloads allowed files and reaches readiness',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('coreml_bundle_');
+      addTearDown(() async => tempDir.delete(recursive: true));
+      const repository = _FakeHuggingFaceModelRepository(
+        files: <String>[
+          'README.md',
+          'model_config.json',
+          'hf_model/config.json',
+          'hf_model/tokenizer.json',
+          'hf_model/tokenizer_config.json',
+          'swa/chunk1.mlmodelc/model.mil',
+          'swa/chunk1.mlmodelc/coremldata.bin',
+          'swa/chunk1.mlmodelc/weights/weight.bin',
+          'swa/chunk2_3way.mlmodelc/coremldata.bin',
+          'swa/chunk3_3way.mlmodelc/coremldata.bin',
+          'embed_tokens_q8.bin',
+          'embed_tokens_scales.bin',
+          'embed_tokens_per_layer_q8.bin',
+          'embed_tokens_per_layer_scales.bin',
+          'per_layer_projection.bin',
+          'notes.txt',
+        ],
+      );
+      const preparer = CoreMlBundleArtifactPreparer(repository: repository);
+      final model = _testCoreMlModel();
+
+      await preparer.prepare(
+        model: model,
+        targetPath: tempDir.path,
+        requiresWiFi: true,
+      );
+
+      expect(await File(p.join(tempDir.path, 'README.md')).exists(), isFalse);
+      expect(
+        await File(p.join(tempDir.path, 'model_config.json')).exists(),
+        isTrue,
+      );
+      expect(
+        await File(p.join(tempDir.path, 'hf_model/tokenizer.json')).exists(),
+        isTrue,
+      );
+      expect(
+        await File(p.join(tempDir.path, 'chunk1.mlmodelc/model.mil')).exists(),
+        isTrue,
+      );
+      expect(
+        await File(
+          p.join(tempDir.path, 'swa/chunk1.mlmodelc/model.mil'),
+        ).exists(),
+        isFalse,
+      );
+      final readiness = await preparer.readiness(
+        model: model,
+        targetPath: tempDir.path,
+      );
+      expect(readiness.isReady, isTrue);
+    },
+  );
+
+  test('CoreML bundle readiness reports missing bundle parts', () async {
+    final tempDir = await Directory.systemTemp.createTemp('coreml_missing_');
+    addTearDown(() async => tempDir.delete(recursive: true));
+    const preparer = CoreMlBundleArtifactPreparer(
+      repository: _FakeHuggingFaceModelRepository(),
+    );
+    final model = _testCoreMlModel();
+
+    var readiness = await preparer.readiness(
+      model: model,
+      targetPath: tempDir.path,
+    );
+    expect(readiness.isReady, isFalse);
+    expect(readiness.message, contains('model_config.json'));
+
+    await File(p.join(tempDir.path, 'model_config.json')).writeAsString('{}');
+    readiness = await preparer.readiness(
+      model: model,
+      targetPath: tempDir.path,
+    );
+    expect(readiness.isReady, isFalse);
+    expect(readiness.message, contains('hf_model'));
+
+    final hfModelDir = Directory(p.join(tempDir.path, 'hf_model'));
+    await hfModelDir.create();
+    await File(p.join(hfModelDir.path, 'config.json')).writeAsString('{}');
+    await File(p.join(hfModelDir.path, 'tokenizer.json')).writeAsString('{}');
+    await File(
+      p.join(hfModelDir.path, 'tokenizer_config.json'),
+    ).writeAsString('{}');
+    readiness = await preparer.readiness(
+      model: model,
+      targetPath: tempDir.path,
+    );
+    expect(readiness.isReady, isFalse);
+    expect(readiness.message, contains('.mlmodelc'));
+  });
+
+  test(
+    'lifecycle uses artifact preparer for CoreML bundle before runtime',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'coreml_lifecycle_',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final model = _testCoreMlModel();
+      final preparer = _RecordingArtifactPreparer();
+      final registry = _MemoryRegistryStore();
+      final runtime = _FakeLlmRuntime();
+      final service = ModelLifecycleService(
+        catalog: _FakeCatalog(
+          ModelManifest(schemaVersion: '1.0', models: [model]),
+        ),
+        deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+        selectionService: const ModelSelectionService(),
+        storagePaths: _FakeStoragePaths(tempDir.path),
+        artifactPreparer: preparer,
+        registryStore: registry,
+        runtime: runtime,
+      );
+
+      final progress = await service.prepareDemoModel().toList();
+
+      expect(preparer.prepareCalls, 1);
+      expect(
+        progress.map((item) => item.status),
+        containsAllInOrder([
+          ModelInstallStatus.downloading,
+          ModelInstallStatus.verifying,
+          ModelInstallStatus.installed,
+          ModelInstallStatus.loading,
+          ModelInstallStatus.ready,
+        ]),
+      );
+      expect(runtime.initializedModelId, model.id);
+      final record = await registry.read(model.id);
+      expect(record?.localPath, tempDir.path);
+      expect(record?.runtime, 'coreml_llm');
+      expect(record?.artifactType, 'coreml_bundle');
+      expect(record?.status, ModelInstallStatus.ready);
+    },
+  );
+
+  test(
+    'generation budget adapts by intent within manifest and context caps',
+    () {
+      const policy = GenerationBudgetPolicy();
+      final model = _testCoreMlModel();
+
+      final shortBudget = policy.buildBudget(
+        model: model,
+        prompt: 'Hi',
+        intent: GenerationIntent.shortChat,
+      );
+      final chatBudget = policy.buildBudget(
+        model: model,
+        prompt: 'Give me one practical wellbeing suggestion for today.',
+        intent: GenerationIntent.chat,
+      );
+      final detailedBudget = policy.buildBudget(
+        model: model,
+        prompt: 'Explain a simple afternoon focus routine in detail.',
+        intent: GenerationIntent.detailed,
+      );
+      final reportBudget = policy.buildBudget(
+        model: model,
+        prompt: 'Write a weekly wellbeing report.',
+        intent: GenerationIntent.report,
+      );
+
+      expect(shortBudget.maxTokens, inInclusiveRange(256, 512));
+      expect(chatBudget.maxTokens, inInclusiveRange(512, 1024));
+      expect(detailedBudget.maxTokens, inInclusiveRange(1024, 2048));
+      expect(reportBudget.maxTokens, inInclusiveRange(2048, 4000));
+      expect(reportBudget.maxTokens, lessThanOrEqualTo(4000));
+      expect(
+        reportBudget.maxTokens + reportBudget.estimatedInputTokens,
+        lessThanOrEqualTo(model.maxContextTokens),
+      );
+    },
+  );
+
+  test('generation budget rejects insufficient remaining context', () {
+    const policy = GenerationBudgetPolicy();
+    final model = _testCoreMlModel(maxContextTokens: 200);
+
+    expect(
+      () => policy.buildBudget(
+        model: model,
+        prompt: 'x' * 300,
+        intent: GenerationIntent.chat,
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test('demo chat uses dynamic generation budget from manifest', () async {
+    final model = _testCoreMlModel();
+    final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
+    final controller = _testDemoChatController(model: model, runtime: runtime);
+
+    final response = await controller.ask(prompt: 'What is 2+2?');
+
+    expect(response.text, 'The answer is 4.');
+    expect(runtime.generatedPrompts, <String>['What is 2+2?']);
+    expect(runtime.generatedConfigs.single.maxTokens, isNot(32));
+    expect(
+      runtime.generatedConfigs.single.maxTokens,
+      inInclusiveRange(512, 1024),
+    );
+    expect(
+      runtime.generatedConfigs.single.topK,
+      model.defaultGenerationConfig.topK,
+    );
+    expect(runtime.generatedConfigs.single.temperature, 1);
+  });
+
+  test('demo chat report intent uses a larger dynamic budget', () async {
+    final model = _testCoreMlModel();
+    final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
+    final controller = _testDemoChatController(model: model, runtime: runtime);
+
+    await controller.ask(
+      prompt: 'Summarize today.',
+      intent: GenerationIntent.chat,
+    );
+    await controller.ask(
+      prompt: 'Write a weekly wellbeing report.',
+      intent: GenerationIntent.report,
+    );
+
+    expect(
+      runtime.generatedConfigs.last.maxTokens,
+      greaterThan(runtime.generatedConfigs.first.maxTokens),
+    );
+    expect(runtime.generatedConfigs.last.maxTokens, lessThanOrEqualTo(4000));
+  });
+
+  test('demo chat continues once when output looks truncated', () async {
+    final model = _testCoreMlModel();
+    final runtime = _FakeLlmRuntime()
+      ..initializedModelId = model.id
+      ..responseTexts.addAll(<String>[
+        List<String>.filled(430, 'focus').join(' '),
+        'and finish with a complete sentence.',
+      ]);
+    final controller = _testDemoChatController(model: model, runtime: runtime);
+
+    final response = await controller.ask(
+      prompt: 'Give me a practical focus suggestion.',
+    );
+
+    expect(runtime.generatedPrompts, hasLength(2));
+    expect(
+      runtime.generatedPrompts.last,
+      startsWith(DemoChatController.continuationPromptPrefix),
+    );
+    expect(response.text, contains('and finish with a complete sentence.'));
+  });
+}
+
+DemoChatController _testDemoChatController({
+  required ModelManifestEntry model,
+  required _FakeLlmRuntime runtime,
+}) {
+  return DemoChatController(
+    catalog: _FakeCatalog(ModelManifest(schemaVersion: '1.0', models: [model])),
+    deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+    selectionService: const ModelSelectionService(),
+    lifecycleService: ModelLifecycleService(
+      catalog: _FakeCatalog(
+        ModelManifest(schemaVersion: '1.0', models: [model]),
+      ),
+      deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+      selectionService: const ModelSelectionService(),
+      storagePaths: const _FakeStoragePaths('/tmp/gemma4-e2b'),
+      artifactPreparer: _RecordingArtifactPreparer(),
+      registryStore: _MemoryRegistryStore(),
+      runtime: runtime,
+    ),
+    runtime: runtime,
   );
 }
 
@@ -269,6 +560,53 @@ ModelManifestEntry _testModel() {
     isDefault: true,
     platforms: <String>['ios', 'android'],
     selectionPriority: 10,
+  );
+}
+
+ModelManifestEntry _testCoreMlModel({
+  int maxContextTokens = 32000,
+  int maxOutputTokens = 4000,
+}) {
+  return ModelManifestEntry(
+    id: 'gemma-4-e2b-it-coreml-ios',
+    displayName: 'Gemma 4 E2B Core ML',
+    provider: 'mlboydaisuke',
+    modelId: 'mlboydaisuke/gemma-4-E2B-coreml',
+    runtime: 'coreml_llm',
+    artifactType: 'coreml_bundle',
+    revision: 'n1024',
+    fileName: '',
+    downloadUrl: '',
+    sourceCommit: 'n1024',
+    sha256: 'BUNDLE_READINESS_CHECK',
+    sizeBytes: 2583085056,
+    minMemoryGb: 8,
+    minFreeDiskBytes: 10,
+    modalities: <String>['text'],
+    supportsThinking: true,
+    maxContextTokens: maxContextTokens,
+    defaultGenerationConfig: LlmGenerationConfig(
+      topK: 64,
+      topP: 0.95,
+      temperature: 1,
+      maxTokens: maxOutputTokens,
+      enableThinking: true,
+    ),
+    accelerators: <String>['ane', 'gpu', 'cpu'],
+    isDefault: true,
+    platforms: <String>['ios'],
+    selectionPriority: 10,
+    repoId: 'mlboydaisuke/gemma-4-E2B-coreml',
+    allowPatterns: <String>[
+      'model_config.json',
+      'hf_model/**',
+      'swa/chunk1.mlmodelc/**',
+      'swa/chunk2_3way.mlmodelc/**',
+      'swa/chunk3_3way.mlmodelc/**',
+      '*.bin',
+      '*.npy',
+      '*.txt',
+    ],
   );
 }
 
@@ -340,6 +678,60 @@ class _FakeDownloader implements ModelFileDownloader {
   }
 }
 
+class _FakeHuggingFaceModelRepository implements HuggingFaceModelRepository {
+  const _FakeHuggingFaceModelRepository({this.files = const <String>[]});
+
+  final List<String> files;
+
+  @override
+  Future<void> downloadFile({
+    required String repoId,
+    required String revision,
+    required String remotePath,
+    required String destinationPath,
+  }) async {
+    final file = File(destinationPath);
+    await file.parent.create(recursive: true);
+    await file.writeAsString(remotePath);
+  }
+
+  @override
+  Future<List<String>> listFiles({
+    required String repoId,
+    required String revision,
+  }) async {
+    return files;
+  }
+}
+
+class _RecordingArtifactPreparer implements ModelArtifactPreparer {
+  var prepareCalls = 0;
+  var ready = false;
+
+  @override
+  Future<void> prepare({
+    required ModelManifestEntry model,
+    required String targetPath,
+    required bool requiresWiFi,
+    ModelDownloadProgressCallback? onProgress,
+  }) async {
+    prepareCalls += 1;
+    ready = true;
+    onProgress?.call(1);
+  }
+
+  @override
+  Future<ModelArtifactReadiness> readiness({
+    required ModelManifestEntry model,
+    required String targetPath,
+  }) async {
+    if (ready) {
+      return const ModelArtifactReadiness.ready();
+    }
+    return const ModelArtifactReadiness.missing('missing CoreML test bundle');
+  }
+}
+
 class _MemoryRegistryStore implements ModelRegistryStore {
   final Map<String, ModelInstallRecord> _records =
       <String, ModelInstallRecord>{};
@@ -363,6 +755,11 @@ class _MemoryRegistryStore implements ModelRegistryStore {
 class _FakeLlmRuntime implements LlmRuntime {
   String? initializedModelId;
   LlmModelConfig? initializedConfig;
+  String responseText = 'The answer is 4.';
+  var initializeCalls = 0;
+  final List<String> responseTexts = <String>[];
+  final List<String> generatedPrompts = <String>[];
+  final List<LlmGenerationConfig> generatedConfigs = <LlmGenerationConfig>[];
 
   @override
   Future<void> cancel() async {}
@@ -373,8 +770,15 @@ class _FakeLlmRuntime implements LlmRuntime {
     List<Object> attachments = const <Object>[],
     LlmGenerationConfig config = const LlmGenerationConfig(),
   }) async {
+    generatedPrompts.add(prompt);
+    generatedConfigs.add(config);
+    final nextResponse = responseTexts.isEmpty
+        ? responseText
+        : responseTexts.removeAt(0);
     return LlmResponse(
-      text: prompt == ModelLifecycleService.smokeTestPrompt ? 'ready' : '',
+      text: prompt == ModelLifecycleService.smokeTestPrompt
+          ? 'Take a short walk today.'
+          : nextResponse,
       modelId: initializedModelId ?? 'unloaded',
     );
   }
@@ -398,6 +802,7 @@ class _FakeLlmRuntime implements LlmRuntime {
 
   @override
   Future<void> initialize(LlmModelConfig config) async {
+    initializeCalls += 1;
     initializedModelId = config.modelId;
     initializedConfig = config;
   }

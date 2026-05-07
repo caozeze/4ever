@@ -1,4 +1,5 @@
 import '../../../domain/ai/device_capabilities.dart';
+import '../../../domain/ai/llm_generation_config.dart';
 import '../../../domain/ai/llm_runtime.dart';
 import '../../../domain/ai/model_failure_reason.dart';
 import '../../../domain/ai/model_install_progress.dart';
@@ -6,9 +7,8 @@ import '../../../domain/ai/model_install_record.dart';
 import '../../../domain/ai/model_install_status.dart';
 import '../../../domain/ai/model_manifest_entry.dart';
 import 'device_capabilities_reader.dart';
+import 'model_artifact_preparer.dart';
 import 'model_catalog.dart';
-import 'model_file_downloader.dart';
-import 'model_file_verifier.dart';
 import 'model_registry_store.dart';
 import 'model_selection_service.dart';
 import 'model_storage_paths.dart';
@@ -19,27 +19,34 @@ class ModelLifecycleService {
     required DeviceCapabilitiesReader deviceCapabilitiesReader,
     required ModelSelectionService selectionService,
     required ModelStoragePaths storagePaths,
-    required ModelFileDownloader downloader,
-    required ModelFileVerifier verifier,
+    required ModelArtifactPreparer artifactPreparer,
     required ModelRegistryStore registryStore,
     required LlmRuntime runtime,
   }) : _catalog = catalog,
        _deviceCapabilitiesReader = deviceCapabilitiesReader,
        _selectionService = selectionService,
        _storagePaths = storagePaths,
-       _downloader = downloader,
-       _verifier = verifier,
+       _artifactPreparer = artifactPreparer,
        _registryStore = registryStore,
        _runtime = runtime;
 
-  static const String smokeTestPrompt = 'Reply with the single word: ready';
+  static const String smokeTestPrompt =
+      'Give me one short wellbeing suggestion for today.';
+  static const LlmGenerationConfig smokeTestGenerationConfig =
+      LlmGenerationConfig(maxTokens: 24, enableThinking: false);
+  static const Duration smokeTestTimeout = Duration(minutes: 10);
+  static const String debugRemoteRuntimeUrl = String.fromEnvironment(
+    'GEMMA_MVP_REMOTE_RUNTIME_URL',
+  );
+  static const String debugRemoteModelPath = String.fromEnvironment(
+    'GEMMA_MVP_REMOTE_MODEL_PATH',
+  );
 
   final ModelCatalog _catalog;
   final DeviceCapabilitiesReader _deviceCapabilitiesReader;
   final ModelSelectionService _selectionService;
   final ModelStoragePaths _storagePaths;
-  final ModelFileDownloader _downloader;
-  final ModelFileVerifier _verifier;
+  final ModelArtifactPreparer _artifactPreparer;
   final ModelRegistryStore _registryStore;
   final LlmRuntime _runtime;
 
@@ -68,7 +75,9 @@ class ModelLifecycleService {
     bool requiresWiFi = true,
   }) async* {
     final now = DateTime.now().toUtc();
-    final targetPath = await _storagePaths.modelFilePath(model);
+    final targetPath = debugRemoteModelPath.isNotEmpty
+        ? debugRemoteModelPath
+        : await _storagePaths.modelFilePath(model);
     var record = ModelInstallRecord(
       modelId: model.id,
       displayName: model.displayName,
@@ -99,11 +108,11 @@ class ModelLifecycleService {
       return;
     }
 
-    final existingFileIsUsable = await _existingFileIsUsable(
-      model: model,
-      targetPath: targetPath,
-    );
-    if (!existingFileIsUsable) {
+    final useDebugRemoteRuntime = debugRemoteRuntimeUrl.isNotEmpty;
+    final readiness = useDebugRemoteRuntime
+        ? const ModelArtifactReadiness.ready()
+        : await _artifactPreparer.readiness(model: model, targetPath: targetPath);
+    if (!readiness.isReady) {
       record = record.copyWith(
         status: ModelInstallStatus.downloading,
         updatedAt: DateTime.now().toUtc(),
@@ -113,13 +122,32 @@ class ModelLifecycleService {
         modelId: model.id,
         status: ModelInstallStatus.downloading,
         progress: 0,
+        message: readiness.message,
       );
 
-      await _downloader.download(
-        model: model,
-        destinationPath: targetPath,
-        requiresWiFi: requiresWiFi,
-      );
+      try {
+        await _artifactPreparer.prepare(
+          model: model,
+          targetPath: targetPath,
+          requiresWiFi: requiresWiFi,
+        );
+      } on Object catch (error) {
+        final reason = _failureReasonForArtifactMessage(error.toString());
+        final failed = record.copyWith(
+          status: ModelInstallStatus.failed,
+          updatedAt: DateTime.now().toUtc(),
+          failureReason: reason,
+          errorMessage: error.toString(),
+        );
+        await _registryStore.upsert(failed);
+        yield ModelInstallProgress(
+          modelId: model.id,
+          status: ModelInstallStatus.failed,
+          failureReason: reason,
+          message: error.toString(),
+        );
+        return;
+      }
 
       record = record.copyWith(
         status: ModelInstallStatus.verifying,
@@ -131,21 +159,28 @@ class ModelLifecycleService {
         status: ModelInstallStatus.verifying,
       );
 
-      if (model.sha256 != 'TO_BE_FILLED') {
-        final hashMatches = await _verifier.verifySha256(
-          path: targetPath,
-          expectedSha256: model.sha256,
+      final preparedReadiness = await _artifactPreparer.readiness(
+        model: model,
+        targetPath: targetPath,
+      );
+      if (!preparedReadiness.isReady) {
+        final reason = _failureReasonForArtifactMessage(
+          preparedReadiness.message,
         );
-        if (!hashMatches) {
-          final failed = record.copyWith(
-            status: ModelInstallStatus.failed,
-            updatedAt: DateTime.now().toUtc(),
-            failureReason: ModelFailureReason.hashMismatch,
-          );
-          await _registryStore.upsert(failed);
-          yield _failed(model, ModelFailureReason.hashMismatch);
-          return;
-        }
+        final failed = record.copyWith(
+          status: ModelInstallStatus.failed,
+          updatedAt: DateTime.now().toUtc(),
+          failureReason: reason,
+          errorMessage: preparedReadiness.message,
+        );
+        await _registryStore.upsert(failed);
+        yield ModelInstallProgress(
+          modelId: model.id,
+          status: ModelInstallStatus.failed,
+          failureReason: reason,
+          message: preparedReadiness.message,
+        );
+        return;
       }
     }
 
@@ -171,23 +206,52 @@ class ModelLifecycleService {
       ),
     );
 
-    await _runtime.initialize(model.toLlmModelConfig(targetPath));
-    final response = await _runtime
-        .generateOnce(
-          prompt: smokeTestPrompt,
-          config: model.defaultGenerationConfig,
-        )
-        .timeout(const Duration(seconds: 30));
+    try {
+      await _runtime.initialize(model.toLlmModelConfig(targetPath));
+      final response = await _runtime
+          .generateOnce(
+            prompt: smokeTestPrompt,
+            config: smokeTestGenerationConfig,
+          )
+          .timeout(smokeTestTimeout);
 
-    if (!response.text.toLowerCase().contains('ready')) {
+      final smokeText = response.text.replaceAll('<pad>', '').trim();
+      if (smokeText.isEmpty) {
+        final failed = record.copyWith(
+          status: ModelInstallStatus.failed,
+          updatedAt: DateTime.now().toUtc(),
+          failureReason: ModelFailureReason.smokeTestFailed,
+          errorMessage: 'Smoke test returned empty output.',
+        );
+        await _registryStore.upsert(failed);
+        yield _failed(model, ModelFailureReason.smokeTestFailed);
+        return;
+      }
+      if (!_looksLikeUsableText(smokeText)) {
+        final failed = record.copyWith(
+          status: ModelInstallStatus.failed,
+          updatedAt: DateTime.now().toUtc(),
+          failureReason: ModelFailureReason.smokeTestFailed,
+          errorMessage: 'Smoke test returned unusable output: $smokeText',
+        );
+        await _registryStore.upsert(failed);
+        yield _failed(model, ModelFailureReason.smokeTestFailed);
+        return;
+      }
+    } on Object catch (error) {
       final failed = record.copyWith(
         status: ModelInstallStatus.failed,
         updatedAt: DateTime.now().toUtc(),
-        failureReason: ModelFailureReason.smokeTestFailed,
-        errorMessage: 'Smoke test did not return ready.',
+        failureReason: ModelFailureReason.runtimeFailed,
+        errorMessage: error.toString(),
       );
       await _registryStore.upsert(failed);
-      yield _failed(model, ModelFailureReason.smokeTestFailed);
+      yield ModelInstallProgress(
+        modelId: model.id,
+        status: ModelInstallStatus.failed,
+        failureReason: ModelFailureReason.runtimeFailed,
+        message: error.toString(),
+      );
       return;
     }
 
@@ -204,19 +268,6 @@ class ModelLifecycleService {
     );
   }
 
-  Future<bool> _existingFileIsUsable({
-    required ModelManifestEntry model,
-    required String targetPath,
-  }) async {
-    if (await _verifier.exists(targetPath)) {
-      final size = await _verifier.length(targetPath);
-      if (size == model.sizeBytes || model.sha256 == 'TO_BE_FILLED') {
-        return true;
-      }
-    }
-    return false;
-  }
-
   ModelInstallProgress _failed(
     ModelManifestEntry model,
     ModelFailureReason reason,
@@ -226,5 +277,25 @@ class ModelLifecycleService {
       status: ModelInstallStatus.failed,
       failureReason: reason,
     );
+  }
+
+  ModelFailureReason _failureReasonForArtifactMessage(String? message) {
+    final normalized = message?.toLowerCase() ?? '';
+    if (normalized.contains('hash') || normalized.contains('sha-256')) {
+      return ModelFailureReason.hashMismatch;
+    }
+    return ModelFailureReason.downloadFailed;
+  }
+
+  bool _looksLikeUsableText(String text) {
+    final normalized = text.replaceAll('<pad>', '').trim();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    final asciiLetters = RegExp(r'[A-Za-z]').allMatches(normalized).length;
+    final visibleAscii = RegExp(
+      r'[A-Za-z0-9 .,;:!?()-]',
+    ).allMatches(normalized).length;
+    return asciiLetters >= 8 && visibleAscii / normalized.length >= 0.55;
   }
 }

@@ -81,20 +81,20 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/workmanager_apple/ios"
 
 SPEC CHECKSUMS:
-  background_downloader: 50e91d979067b82081aba359d7d916b3ba5fadad
-  connectivity_plus: cb623214f4e1f6ef8fe7403d580fdad517d2f7dd
-  device_info_plus: 21fcca2080fbcd348be798aa36c3e5ed849eefbe
+  background_downloader: a05c77d32a0d70615b9c04577aa203535fc924ff
+  connectivity_plus: 2a701ffec2c0ae28a48cf7540e279787e77c447d
+  device_info_plus: bf2e3232933866d73fe290f2942f2156cdd10342
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  flutter_local_notifications: a5a732f069baa862e728d839dd2ebb904737effb
-  flutter_secure_storage_darwin: acdb3f316ed05a3e68f856e0353b133eec373a23
+  flutter_local_notifications: ff50f8405aaa0ccdc7dcfb9022ca192e8ad9688f
+  flutter_secure_storage_darwin: 557817588b80e60213cbecb573c45c76b788018d
   FMDB: 728731dd336af3936ce00f91d9d8495f5718a0e6
-  health: 4decf5d74e8f54c58a8c07a385fc72f629a831d9
-  integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
-  package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499
-  permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
-  sqflite_sqlcipher: 8e5bdaae6b2c254f8a277a564f07bc4e2a8642a3
+  health: c1dfe8bc28ccd5998a32bdd0963943bfe9ac8320
+  integration_test: 252f60fa39af5e17c3aa9899d35d908a0721b573
+  package_info_plus: c0502532a26c7662a62a356cebe2692ec5fe4ec4
+  permission_handler_apple: 9878588469a2b0d0fc1e048d9f43605f92e6cec2
+  sqflite_sqlcipher: 1c9c7ceb30cb65dab28712cb2110fdf39b37311c
   SQLCipher: eb79c64049cb002b4e9fcb30edb7979bf4706dfc
-  workmanager_apple: 904529ae31e97fc5be632cf628507652294a0778
+  workmanager_apple: 7bac258335c310689a641e2d66e88d4845d372e9
 
 PODFILE CHECKSUM: f33ed30d7d857419eae96b22f2256491591f5e6a
 
