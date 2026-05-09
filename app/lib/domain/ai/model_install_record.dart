@@ -93,10 +93,20 @@ class ModelInstallRecord {
       status: ModelInstallStatus.values.byName(json['status']! as String),
       createdAt: DateTime.parse(json['created_at']! as String),
       updatedAt: DateTime.parse(json['updated_at']! as String),
-      failureReason: failureReason == null
-          ? null
-          : ModelFailureReason.values.byName(failureReason),
+      failureReason: _failureReasonFromName(failureReason),
       errorMessage: json['error_message'] as String?,
     );
+  }
+
+  static ModelFailureReason? _failureReasonFromName(String? name) {
+    if (name == null) {
+      return null;
+    }
+    for (final reason in ModelFailureReason.values) {
+      if (reason.name == name) {
+        return reason;
+      }
+    }
+    return ModelFailureReason.unknown;
   }
 }

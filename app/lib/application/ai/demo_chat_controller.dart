@@ -2,7 +2,9 @@ import '../../domain/ai/llm_response.dart';
 import '../../domain/ai/llm_runtime.dart';
 import '../../domain/ai/model_install_progress.dart';
 import '../../domain/ai/model_manifest_entry.dart';
+import '../health/health_prompt_context_service.dart';
 import 'generation_budget_policy.dart';
+import 'local_coach_prompt_builder.dart';
 import 'model/device_capabilities_reader.dart';
 import 'model/model_catalog.dart';
 import 'model/model_lifecycle_service.dart';
@@ -15,6 +17,8 @@ class DemoChatController {
     required ModelSelectionService selectionService,
     required ModelLifecycleService lifecycleService,
     required LlmRuntime runtime,
+    HealthPromptContextService? healthPromptContextService,
+    LocalCoachPromptBuilder promptBuilder = const LocalCoachPromptBuilder(),
     GenerationBudgetPolicy generationBudgetPolicy =
         const GenerationBudgetPolicy(),
   }) : _catalog = catalog,
@@ -22,10 +26,11 @@ class DemoChatController {
        _selectionService = selectionService,
        _lifecycleService = lifecycleService,
        _runtime = runtime,
+       _healthPromptContextService = healthPromptContextService,
+       _promptBuilder = promptBuilder,
        _generationBudgetPolicy = generationBudgetPolicy;
 
-  static const String defaultPrompt =
-      'Give me a short non-medical wellbeing suggestion for today.';
+  static const String defaultPrompt = 'What is the capital of France?';
   static const String defaultPreferredModelId = String.fromEnvironment(
     'GEMMA_MVP_MODEL_ID',
     defaultValue: 'gemma-4-e2b-it-coreml-ios',
@@ -34,12 +39,15 @@ class DemoChatController {
   static const String continuationPromptPrefix =
       'Continue the previous answer from exactly where it stopped. '
       'Do not restart.';
+  static const Duration healthPromptContextTimeout = Duration(seconds: 10);
 
   final ModelCatalog _catalog;
   final DeviceCapabilitiesReader _deviceCapabilitiesReader;
   final ModelSelectionService _selectionService;
   final ModelLifecycleService _lifecycleService;
   final LlmRuntime _runtime;
+  final HealthPromptContextService? _healthPromptContextService;
+  final LocalCoachPromptBuilder _promptBuilder;
   final GenerationBudgetPolicy _generationBudgetPolicy;
 
   Future<ModelManifestEntry> _selectModel({
@@ -78,20 +86,34 @@ class DemoChatController {
       throw StateError('Model is not ready. Prepare the model first.');
     }
 
+    final finalPrompt = await _buildPrompt(normalizedPrompt);
     final model = await _selectModel();
     final config = _generationBudgetPolicy.buildConfig(
       model: model,
-      prompt: normalizedPrompt,
+      prompt: finalPrompt,
       intent: intent,
       conversationHistoryTokenEstimate: conversationHistoryTokenEstimate,
     );
     final response = await _runtime.generateOnce(
-      prompt: normalizedPrompt,
+      prompt: finalPrompt,
       config: config,
     );
     var text = _usableText(response.text);
     if (text.isEmpty) {
-      throw StateError('Gemma returned no usable text.');
+      final fallbackConfig = _generationBudgetPolicy.buildConfig(
+        model: model,
+        prompt: normalizedPrompt,
+        intent: intent,
+        conversationHistoryTokenEstimate: conversationHistoryTokenEstimate,
+      );
+      final fallbackResponse = await _runtime.generateOnce(
+        prompt: normalizedPrompt,
+        config: fallbackConfig,
+      );
+      text = _usableText(fallbackResponse.text);
+      if (text.isEmpty) {
+        throw StateError('Gemma returned no usable text.');
+      }
     }
 
     final continuationLimit = _generationBudgetPolicy.continuationCountFor(
@@ -106,7 +128,7 @@ class DemoChatController {
       continuationCount += 1;
       final continuation = await _runtime.generateOnce(
         prompt: _continuationPrompt(
-          originalPrompt: normalizedPrompt,
+          originalPrompt: finalPrompt,
           answerSoFar: text,
         ),
         config: config,
@@ -126,6 +148,28 @@ class DemoChatController {
     }
 
     return LlmResponse(text: text, modelId: response.modelId);
+  }
+
+  Future<String> _buildPrompt(String userPrompt) async {
+    final healthPromptContextService = _healthPromptContextService;
+    final healthContext = healthPromptContextService == null
+        ? LocalHealthPromptContext.noData()
+        : await healthPromptContextService
+              .buildForChat()
+              .timeout(
+                healthPromptContextTimeout,
+                onTimeout: () =>
+                    LocalHealthPromptContext.noData('health context timeout'),
+              )
+              .catchError(
+                (_) => LocalHealthPromptContext.noData(
+                  'health context unavailable',
+                ),
+              );
+    return _promptBuilder.build(
+      userMessage: userPrompt,
+      healthContext: healthContext,
+    );
   }
 
   String _usableText(String text) {

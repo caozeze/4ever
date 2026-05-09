@@ -24,12 +24,18 @@ class GemmaRuntimeHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
             prompt = str(payload["prompt"]).strip()
             max_tokens = int(payload.get("max_tokens", 32))
+            model_id = str(payload.get("model_id", "gemma-4-e2b-it-coreml-ios"))
             if not prompt:
                 raise ValueError("prompt must not be empty")
         except Exception as exc:  # noqa: BLE001
             self._send_json(400, {"error": str(exc)})
             return
 
+        print(
+            "[gemma-http] generate "
+            f"model_id={model_id} prompt_len={len(prompt)} "
+            f"max_tokens={max_tokens}"
+        )
         command = [
             str(self.binary),
             str(self.model_dir),
@@ -62,7 +68,7 @@ class GemmaRuntimeHandler(BaseHTTPRequestHandler):
         self._send_json(
             200,
             {
-                "model_id": "gemma-4-e2b-it-coreml-ios",
+                "model_id": model_id,
                 "text": text,
                 "debug_runtime": "coreml-llm-smoke",
             },

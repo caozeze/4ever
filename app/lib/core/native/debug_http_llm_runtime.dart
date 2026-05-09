@@ -44,11 +44,12 @@ class DebugHttpLlmRuntime implements LlmRuntime {
     List<Object> attachments = const <Object>[],
     LlmGenerationConfig config = const LlmGenerationConfig(),
   }) async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
     try {
-      final request = await client.postUrl(_endpoint).timeout(
-        const Duration(seconds: 15),
-      );
+      final request = await client
+          .postUrl(_endpoint)
+          .timeout(const Duration(seconds: 15));
       request.headers.contentType = ContentType.json;
       final body = utf8.encode(
         jsonEncode(<String, Object?>{
@@ -59,10 +60,12 @@ class DebugHttpLlmRuntime implements LlmRuntime {
       );
       request.contentLength = body.length;
       request.add(body);
-      final response = await request.close().timeout(const Duration(minutes: 10));
-      final responseBody = await utf8.decodeStream(response).timeout(
+      final response = await request.close().timeout(
         const Duration(minutes: 10),
       );
+      final responseBody = await utf8
+          .decodeStream(response)
+          .timeout(const Duration(minutes: 10));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         _state = 'failed';
         _lastError = responseBody;
@@ -72,7 +75,8 @@ class DebugHttpLlmRuntime implements LlmRuntime {
       final text = data['text'] as String? ?? '';
       return LlmResponse(
         text: text,
-        modelId: data['model_id'] as String? ?? _loadedModelId ?? 'debug-gemma4',
+        modelId:
+            data['model_id'] as String? ?? _loadedModelId ?? 'debug-gemma4',
       );
     } finally {
       client.close(force: true);

@@ -10,6 +10,10 @@ final class LlmRuntimeHostApiAdapter: NSObject {
   private var lastErrorCode: String?
   private var lastErrorMessage: String?
   private var generationTask: Task<Void, Never>?
+  private var activeGenerationId: UUID?
+  private var generationTimeoutNanoseconds: UInt64 {
+    return 300_000_000_000
+  }
 
   func register(with messenger: FlutterBinaryMessenger) {
     let channel = FlutterMethodChannel(
@@ -118,41 +122,85 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     let maxTokens = config?["max_tokens"] as? Int ?? 2048
 
     generationTask?.cancel()
+    let generationId = UUID()
+    activeGenerationId = generationId
     generationTask = Task { [weak self] in
+      let decodeTask = Task<String, Error> {
+        return try await llm.generate(prompt, maxTokens: maxTokens)
+      }
+      let timeoutTask = Task { [weak self] in
+        try? await Task.sleep(nanoseconds: self?.generationTimeoutNanoseconds ?? 120_000_000_000)
+        guard !Task.isCancelled else {
+          return
+        }
+        decodeTask.cancel()
+        NSLog("[CoreMLLLM] generateOnce timeout reached; cancelling decode")
+      }
       do {
-        NSLog("[CoreMLLLM] generateOnce modelId=%@ promptLength=%ld maxTokens=%ld promptPrefix=%@", modelId, prompt.count, maxTokens, String(prompt.prefix(96)))
-        let text = try await llm.generate(prompt, maxTokens: maxTokens)
+        NSLog("[CoreMLLLM] generateOnce modelId=%@ promptLength=%ld maxTokens=%ld", modelId, prompt.count, maxTokens)
+        let text = try await decodeTask.value
+        timeoutTask.cancel()
         let wasCancelled = Task.isCancelled
         DispatchQueue.main.async {
           guard !wasCancelled else {
-            result(nativeFlutterError(.generationCancelled, message: "Generation was cancelled."))
+            self?.completeGeneration(
+              generationId,
+              result: result,
+              payload: nativeFlutterError(.generationCancelled, message: "Generation was cancelled.")
+            )
             return
           }
-          NSLog("[CoreMLLLM] generateOnce outputLength=%ld outputPrefix=%@", text.count, String(text.prefix(160)))
+          NSLog("[CoreMLLLM] generateOnce outputLength=%ld", text.count)
           guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            result(nativeFlutterError(.generationEmptyOutput, message: "CoreML-LLM returned empty output."))
+            self?.lastErrorCode = NativeErrorCode.generationEmptyOutput.rawValue
+            self?.lastErrorMessage = "CoreML-LLM returned empty output."
+            self?.completeGeneration(
+              generationId,
+              result: result,
+              payload: nativeFlutterError(.generationEmptyOutput, message: "CoreML-LLM returned empty output.")
+            )
             return
           }
-          result([
-            "text": text,
-            "model_id": modelId
-          ])
-          self?.generationTask = nil
+          self?.completeGeneration(
+            generationId,
+            result: result,
+            payload: [
+              "text": text,
+              "model_id": modelId
+            ]
+          )
         }
       } catch is CancellationError {
+        timeoutTask.cancel()
         DispatchQueue.main.async {
-          result(nativeFlutterError(.generationCancelled, message: "Generation was cancelled."))
-          self?.generationTask = nil
+          self?.completeGeneration(
+            generationId,
+            result: result,
+            payload: nativeFlutterError(.generationTimeout, message: "Generation timed out before producing text.")
+          )
         }
       } catch {
+        timeoutTask.cancel()
         DispatchQueue.main.async {
           self?.lastErrorCode = NativeErrorCode.modelRuntimeInternal.rawValue
           self?.lastErrorMessage = String(describing: error)
-          result(nativeFlutterError(.modelRuntimeInternal, message: String(describing: error)))
-          self?.generationTask = nil
+          self?.completeGeneration(
+            generationId,
+            result: result,
+            payload: nativeFlutterError(.modelRuntimeInternal, message: String(describing: error))
+          )
         }
       }
     }
+  }
+
+  private func completeGeneration(_ generationId: UUID, result: FlutterResult, payload: Any) {
+    guard activeGenerationId == generationId else {
+      return
+    }
+    activeGenerationId = nil
+    generationTask = nil
+    result(payload)
   }
 
   private func statusPayload() -> [String: Any?] {
@@ -171,49 +219,13 @@ final class LlmRuntimeHostApiAdapter: NSObject {
       return localDirectory
     }
 
-    guard let modelInfo = coreMlModelInfo(for: modelId) else {
-      throw NSError(
-        domain: "GemmaLocalLlmRuntime",
-        code: 1,
-        userInfo: [
-          NSLocalizedDescriptionKey: "No CoreML downloader mapping for model id \(modelId)."
-        ]
-      )
-    }
-
-    DispatchQueue.main.async {
-      self.state = "downloading"
-    }
-    if modelId == "gemma-4-e2b-it-coreml-ios" {
-      UserDefaults.standard.set(false, forKey: ModelDownloader.includeMultimodalKey)
-    }
-
-    let modelURL = try await ModelDownloader.shared.download(modelInfo)
-    let directory = modelURL.deletingLastPathComponent()
-    guard isCoreMlBundleReady(at: directory) else {
-      throw NSError(
-        domain: "GemmaLocalLlmRuntime",
-        code: 2,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Downloaded CoreML bundle is missing required model files."
-        ]
-      )
-    }
-    DispatchQueue.main.async {
-      self.state = "loading"
-    }
-    return directory
-  }
-
-  private func coreMlModelInfo(for modelId: String) -> ModelDownloader.ModelInfo? {
-    switch modelId {
-    case "gemma-4-e2b-it-coreml-ios":
-      return ModelDownloader.ModelInfo.gemma4e2b3way
-    case "gemma-4-e4b-it-coreml-ios":
-      return ModelDownloader.ModelInfo.gemma4e4b
-    default:
-      return nil
-    }
+    throw NSError(
+      domain: "GemmaLocalLlmRuntime",
+      code: 1,
+      userInfo: [
+        NSLocalizedDescriptionKey: "Local CoreML bundle is not ready at \(localPath)."
+      ]
+    )
   }
 
   private func selectedComputeUnits() -> MLComputeUnits {
@@ -223,10 +235,15 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     switch value {
     case "cpu", "cpuonly":
       return .cpuOnly
-    case "gpu", "cpuandgpu":
+    case "gpu":
+      NSLog("[CoreMLLLM] GEMMA_MVP_COMPUTE_UNITS=gpu is not a supported CoreML mode for this bundle; using cpuAndNeuralEngine")
+      return .cpuAndNeuralEngine
+    case "cpuandgpu":
       return .cpuAndGPU
     case "all":
       return .all
+    case "cpuane", "cpuandneuralengine":
+      return .cpuAndNeuralEngine
     default:
       return .cpuAndNeuralEngine
     }

@@ -18,7 +18,7 @@ class GenerationBudget {
 class GenerationBudgetPolicy {
   const GenerationBudgetPolicy({
     this.safetyMarginTokens = 128,
-    this.minimumOutputTokens = 128,
+    this.minimumOutputTokens = 8,
   });
 
   final int safetyMarginTokens;
@@ -44,14 +44,8 @@ class GenerationBudgetPolicy {
     }
 
     final baseBudget = switch (intent) {
-      GenerationIntent.shortChat => _clampInt(256 + promptTokens, 256, 512),
-      GenerationIntent.chat => _clampInt(512 + promptTokens, 512, 1024),
-      GenerationIntent.detailed => _clampInt(1024 + promptTokens, 1024, 2048),
-      GenerationIntent.report => _clampInt(
-        2048 + promptTokens,
-        2048,
-        manifestMaxOutput,
-      ),
+      GenerationIntent.shortChat => _clampInt(8 + promptTokens, 8, 16),
+      _ => manifestMaxOutput,
     };
 
     final maxTokens = <int>[
@@ -93,7 +87,9 @@ class GenerationBudgetPolicy {
       topK: defaults.topK,
       topP: defaults.topP,
       maxTokens: budget.maxTokens,
-      enableThinking: defaults.enableThinking,
+      enableThinking: intent == GenerationIntent.shortChat
+          ? false
+          : defaults.enableThinking,
     );
   }
 
@@ -121,7 +117,11 @@ class GenerationBudgetPolicy {
   }
 
   int continuationCountFor(GenerationIntent intent) {
-    return intent == GenerationIntent.report ? 2 : 1;
+    return switch (intent) {
+      GenerationIntent.shortChat => 0,
+      GenerationIntent.report => 2,
+      _ => 1,
+    };
   }
 
   int estimateTokens(String text) {

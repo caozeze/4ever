@@ -18,6 +18,7 @@ import '../../data/model/hugging_face_model_repository.dart';
 import '../../data/model/json_model_registry_store.dart';
 import '../../data/model/model_artifact_preparers.dart';
 import '../native/device_capabilities_channel_reader.dart';
+import 'health_providers.dart';
 import 'native_providers.dart';
 
 final modelCatalogProvider = Provider<ModelCatalog>((Ref ref) {
@@ -94,5 +95,6 @@ final demoChatControllerProvider = FutureProvider<DemoChatController>((
     selectionService: ref.watch(modelSelectionServiceProvider),
     lifecycleService: await ref.watch(modelLifecycleServiceProvider.future),
     runtime: ref.watch(llmRuntimeProvider),
+    healthPromptContextService: ref.watch(healthPromptContextServiceProvider),
   );
 });

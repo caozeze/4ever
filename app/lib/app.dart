@@ -18,15 +18,6 @@ final GoRouter _router = GoRouter(
       },
     ),
     GoRoute(
-      path: '/apple-health',
-      builder: (BuildContext context, GoRouterState state) {
-        return const FeaturePlaceholderPage(
-          title: 'Apple Health',
-          currentPath: '/apple-health',
-        );
-      },
-    ),
-    GoRoute(
       path: '/diet',
       builder: (BuildContext context, GoRouterState state) {
         return const FeaturePlaceholderPage(

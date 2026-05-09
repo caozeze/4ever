@@ -5,6 +5,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/ai/demo_chat_controller.dart';
+import '../../application/ai/generation_budget_policy.dart';
 import '../../core/providers/model_management_providers.dart';
 import '../../domain/ai/model_install_progress.dart';
 import '../../domain/ai/model_install_status.dart';
@@ -105,12 +106,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     _scrollToLatestMessage();
 
     try {
-      final text = await _askPrompt(prompt);
+      final controller = await ref.read(demoChatControllerProvider.future);
+      final response = await controller.ask(
+        prompt: prompt,
+        intent: GenerationIntent.chat,
+      );
       if (!mounted) {
         return;
       }
       setState(() {
-        _messages.add(_ChatMessage(role: _ChatRole.assistant, text: text));
+        _messages.add(
+          _ChatMessage(role: _ChatRole.assistant, text: response.text),
+        );
       });
       _scrollToLatestMessage();
     } on Object catch (error) {
@@ -127,12 +134,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         });
       }
     }
-  }
-
-  Future<String> _askPrompt(String prompt) async {
-    final controller = await ref.read(demoChatControllerProvider.future);
-    final response = await controller.ask(prompt: prompt);
-    return response.text;
   }
 
   void _applyProgress(ModelInstallProgress progress) {

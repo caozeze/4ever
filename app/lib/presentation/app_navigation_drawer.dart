@@ -8,11 +8,6 @@ class AppNavigationDrawer extends StatelessWidget {
 
   static const List<_NavigationItem> _items = <_NavigationItem>[
     _NavigationItem(label: 'Chat', path: '/chat', icon: Icons.chat_bubble),
-    _NavigationItem(
-      label: 'Apple Health',
-      path: '/apple-health',
-      icon: Icons.favorite,
-    ),
     _NavigationItem(label: 'Diet', path: '/diet', icon: Icons.restaurant),
     _NavigationItem(label: 'Sleep', path: '/sleep', icon: Icons.bedtime),
     _NavigationItem(

@@ -5,6 +5,5 @@ enum ModelFailureReason {
   downloadFailed,
   hashMismatch,
   runtimeFailed,
-  smokeTestFailed,
   unknown,
 }

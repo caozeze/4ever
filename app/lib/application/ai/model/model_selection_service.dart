@@ -14,9 +14,6 @@ class ModelSelectionService {
         manifest.models
             .where((model) => model.supportsPlatform(capabilities.platform))
             .where((model) => model.minMemoryGb <= capabilities.totalMemoryGb)
-            .where(
-              (model) => model.minFreeDiskBytes <= capabilities.freeDiskBytes,
-            )
             .toList()
           ..sort((a, b) => a.selectionPriority.compareTo(b.selectionPriority));
 

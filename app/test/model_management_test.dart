@@ -28,6 +28,7 @@ import 'package:gemma_local/domain/ai/llm_response.dart';
 import 'package:gemma_local/domain/ai/llm_runtime.dart';
 import 'package:gemma_local/domain/ai/llm_runtime_status.dart';
 import 'package:gemma_local/domain/ai/llm_token_event.dart';
+import 'package:gemma_local/domain/ai/model_failure_reason.dart';
 import 'package:gemma_local/domain/ai/model_install_record.dart';
 import 'package:gemma_local/domain/ai/model_install_status.dart';
 import 'package:gemma_local/domain/ai/model_manifest.dart';
@@ -73,6 +74,25 @@ void main() {
     expect(selectedModel.id, 'gemma-4-e2b-it-coreml-ios');
     expect(selectedModel.runtime, 'coreml_llm');
   });
+
+  test(
+    'selection does not reject an already-installed model for low disk',
+    () async {
+      final manifest = await const AssetModelCatalog().load();
+      const selection = ModelSelectionService();
+
+      final selectedModel = selection.select(
+        manifest: manifest,
+        capabilities: const DeviceCapabilities(
+          platform: 'ios',
+          totalMemoryGb: 16,
+          freeDiskBytes: 0,
+        ),
+      );
+
+      expect(selectedModel.id, 'gemma-4-e2b-it-coreml-ios');
+    },
+  );
 
   test(
     'selection can pick CoreML E4B on iOS when explicitly requested',
@@ -202,8 +222,45 @@ void main() {
     expect(persisted?.revision, 'commit');
   });
 
+  test('JSON registry maps unknown failure reasons to unknown', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'model_registry_legacy_',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final registryPath = p.join(tempDir.path, 'model_registry.json');
+    await File(registryPath).writeAsString(
+      jsonEncode(<String, Object?>{
+        'schema_version': '1.0',
+        'records': <Object?>[
+          <String, Object?>{
+            'model_id': 'gemma-4-e2b-it',
+            'display_name': 'Gemma 4 E2B',
+            'local_path': '/models/gemma-4-e2b-it',
+            'sha256': 'BUNDLE_READINESS_CHECK',
+            'size_bytes': 1,
+            'source_commit': 'commit',
+            'runtime': 'coreml_llm',
+            'artifact_type': 'coreml_bundle',
+            'revision': 'n1024',
+            'status': 'failed',
+            'created_at': '2026-04-27T00:00:00.000Z',
+            'updated_at': '2026-04-27T00:00:00.000Z',
+            'failure_reason': 'smokeTestFailed',
+            'error_message': 'legacy smoke failure',
+          },
+        ],
+      }),
+    );
+
+    final store = JsonModelRegistryStore(registryPath: registryPath);
+    final persisted = await store.read('gemma-4-e2b-it');
+
+    expect(persisted?.failureReason, ModelFailureReason.unknown);
+    expect(persisted?.errorMessage, 'legacy smoke failure');
+  });
+
   test(
-    'lifecycle downloads, registers, initializes, and smoke tests',
+    'lifecycle downloads, registers, initializes, and marks ready',
     () async {
       final tempDir = await Directory.systemTemp.createTemp('model_lifecycle_');
       addTearDown(() async => tempDir.delete(recursive: true));
@@ -241,9 +298,41 @@ void main() {
       expect(runtime.initializedConfig?.runtime, 'litert_lm');
       expect(runtime.initializedConfig?.artifactType, 'litertlm_file');
       expect(runtime.initializedConfig?.revision, 'commit');
+      expect(runtime.generatedPrompts, isEmpty);
+      expect(runtime.generatedConfigs, isEmpty);
       expect((await registry.read(model.id))?.status, ModelInstallStatus.ready);
     },
   );
+
+  test('lifecycle returns ready when runtime already has the model', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'model_lifecycle_ready_',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final model = _testCoreMlModel();
+    final preparer = _RecordingArtifactPreparer();
+    final registry = _MemoryRegistryStore();
+    final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
+    final service = ModelLifecycleService(
+      catalog: _FakeCatalog(
+        ModelManifest(schemaVersion: '1.0', models: [model]),
+      ),
+      deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+      selectionService: const ModelSelectionService(),
+      storagePaths: _FakeStoragePaths(tempDir.path),
+      artifactPreparer: preparer,
+      registryStore: registry,
+      runtime: runtime,
+    );
+
+    final progress = await service.prepareDemoModel().toList();
+
+    expect(progress.map((item) => item.status), [ModelInstallStatus.ready]);
+    expect(preparer.prepareCalls, 0);
+    expect(runtime.initializeCalls, 0);
+    expect(runtime.generatedPrompts, isEmpty);
+    expect((await registry.read(model.id))?.status, ModelInstallStatus.ready);
+  });
 
   test(
     'CoreML bundle preparer downloads allowed files and reaches readiness',
@@ -381,6 +470,7 @@ void main() {
         ]),
       );
       expect(runtime.initializedModelId, model.id);
+      expect(runtime.generatedPrompts, isEmpty);
       final record = await registry.read(model.id);
       expect(record?.localPath, tempDir.path);
       expect(record?.runtime, 'coreml_llm');
@@ -416,11 +506,18 @@ void main() {
         intent: GenerationIntent.report,
       );
 
-      expect(shortBudget.maxTokens, inInclusiveRange(256, 512));
-      expect(chatBudget.maxTokens, inInclusiveRange(512, 1024));
-      expect(detailedBudget.maxTokens, inInclusiveRange(1024, 2048));
-      expect(reportBudget.maxTokens, inInclusiveRange(2048, 4000));
-      expect(reportBudget.maxTokens, lessThanOrEqualTo(4000));
+      expect(shortBudget.maxTokens, inInclusiveRange(8, 16));
+      expect(chatBudget.maxTokens, greaterThan(16));
+      expect(detailedBudget.maxTokens, greaterThan(16));
+      expect(reportBudget.maxTokens, greaterThan(16));
+      expect(
+        chatBudget.maxTokens + chatBudget.estimatedInputTokens,
+        lessThanOrEqualTo(model.maxContextTokens),
+      );
+      expect(
+        detailedBudget.maxTokens + detailedBudget.estimatedInputTokens,
+        lessThanOrEqualTo(model.maxContextTokens),
+      );
       expect(
         reportBudget.maxTokens + reportBudget.estimatedInputTokens,
         lessThanOrEqualTo(model.maxContextTokens),
@@ -450,12 +547,9 @@ void main() {
     final response = await controller.ask(prompt: 'What is 2+2?');
 
     expect(response.text, 'The answer is 4.');
-    expect(runtime.generatedPrompts, <String>['What is 2+2?']);
+    expect(runtime.generatedPrompts.single, 'What is 2+2?');
     expect(runtime.generatedConfigs.single.maxTokens, isNot(32));
-    expect(
-      runtime.generatedConfigs.single.maxTokens,
-      inInclusiveRange(512, 1024),
-    );
+    expect(runtime.generatedConfigs.single.maxTokens, greaterThan(16));
     expect(
       runtime.generatedConfigs.single.topK,
       model.defaultGenerationConfig.topK,
@@ -463,7 +557,73 @@ void main() {
     expect(runtime.generatedConfigs.single.temperature, 1);
   });
 
-  test('demo chat report intent uses a larger dynamic budget', () async {
+  test(
+    'demo chat retries with raw user prompt when model returns only pads',
+    () async {
+      final model = _testCoreMlModel();
+      final runtime = _FakeLlmRuntime()
+        ..initializedModelId = model.id
+        ..responseTexts.addAll(<String>['<pad><pad>', 'Take a short walk.']);
+      final controller = _testDemoChatController(
+        model: model,
+        runtime: runtime,
+      );
+
+      final response = await controller.ask(prompt: 'Give me one tip.');
+
+      expect(response.text, 'Take a short walk.');
+      expect(runtime.generatedPrompts.first, 'Give me one tip.');
+      expect(runtime.generatedPrompts.last, 'Give me one tip.');
+      expect(runtime.generatedConfigs.last.maxTokens, greaterThan(16));
+      expect(runtime.generatedConfigs.last.enableThinking, isTrue);
+    },
+  );
+
+  test('short chat does not issue continuation requests', () async {
+    final model = _testCoreMlModel();
+    final runtime = _FakeLlmRuntime()
+      ..initializedModelId = model.id
+      ..responseText = List<String>.filled(40, 'focus').join(' ');
+    final controller = _testDemoChatController(model: model, runtime: runtime);
+
+    await controller.ask(
+      prompt: 'Give me one tip.',
+      intent: GenerationIntent.shortChat,
+    );
+
+    expect(runtime.generatedPrompts, hasLength(1));
+    expect(runtime.generatedConfigs.single.enableThinking, isFalse);
+  });
+
+  test(
+    'short chat retries and exposes failure when runtime yields no text',
+    () async {
+      final model = _testCoreMlModel();
+      final runtime = _FakeLlmRuntime()
+        ..initializedModelId = model.id
+        ..responseText = '<pad><pad>';
+      final controller = _testDemoChatController(
+        model: model,
+        runtime: runtime,
+      );
+
+      await expectLater(
+        controller.ask(
+          prompt: 'What is the capital of France?',
+          intent: GenerationIntent.shortChat,
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(runtime.generatedPrompts, hasLength(2));
+      expect(
+        runtime.generatedPrompts,
+        everyElement('What is the capital of France?'),
+      );
+    },
+  );
+
+  test('demo chat report intent stays within context budget', () async {
     final model = _testCoreMlModel();
     final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
     final controller = _testDemoChatController(model: model, runtime: runtime);
@@ -477,15 +637,18 @@ void main() {
       intent: GenerationIntent.report,
     );
 
+    expect(runtime.generatedConfigs.last.maxTokens, greaterThan(16));
     expect(
-      runtime.generatedConfigs.last.maxTokens,
-      greaterThan(runtime.generatedConfigs.first.maxTokens),
+      runtime.generatedConfigs.last.maxTokens +
+          const GenerationBudgetPolicy().estimateTokens(
+            runtime.generatedPrompts.last,
+          ),
+      lessThanOrEqualTo(model.maxContextTokens),
     );
-    expect(runtime.generatedConfigs.last.maxTokens, lessThanOrEqualTo(4000));
   });
 
   test('demo chat continues once when output looks truncated', () async {
-    final model = _testCoreMlModel();
+    final model = _testCoreMlModel(maxContextTokens: 900);
     final runtime = _FakeLlmRuntime()
       ..initializedModelId = model.id
       ..responseTexts.addAll(<String>[
@@ -564,7 +727,7 @@ ModelManifestEntry _testModel() {
 }
 
 ModelManifestEntry _testCoreMlModel({
-  int maxContextTokens = 32000,
+  int maxContextTokens = 2048,
   int maxOutputTokens = 4000,
 }) {
   return ModelManifestEntry(
@@ -776,9 +939,7 @@ class _FakeLlmRuntime implements LlmRuntime {
         ? responseText
         : responseTexts.removeAt(0);
     return LlmResponse(
-      text: prompt == ModelLifecycleService.smokeTestPrompt
-          ? 'Take a short walk today.'
-          : nextResponse,
+      text: nextResponse,
       modelId: initializedModelId ?? 'unloaded',
     );
   }

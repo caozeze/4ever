@@ -1,5 +1,4 @@
 import '../../../domain/ai/device_capabilities.dart';
-import '../../../domain/ai/llm_generation_config.dart';
 import '../../../domain/ai/llm_runtime.dart';
 import '../../../domain/ai/model_failure_reason.dart';
 import '../../../domain/ai/model_install_progress.dart';
@@ -29,18 +28,6 @@ class ModelLifecycleService {
        _artifactPreparer = artifactPreparer,
        _registryStore = registryStore,
        _runtime = runtime;
-
-  static const String smokeTestPrompt =
-      'Give me one short wellbeing suggestion for today.';
-  static const LlmGenerationConfig smokeTestGenerationConfig =
-      LlmGenerationConfig(maxTokens: 24, enableThinking: false);
-  static const Duration smokeTestTimeout = Duration(minutes: 10);
-  static const String debugRemoteRuntimeUrl = String.fromEnvironment(
-    'GEMMA_MVP_REMOTE_RUNTIME_URL',
-  );
-  static const String debugRemoteModelPath = String.fromEnvironment(
-    'GEMMA_MVP_REMOTE_MODEL_PATH',
-  );
 
   final ModelCatalog _catalog;
   final DeviceCapabilitiesReader _deviceCapabilitiesReader;
@@ -75,9 +62,7 @@ class ModelLifecycleService {
     bool requiresWiFi = true,
   }) async* {
     final now = DateTime.now().toUtc();
-    final targetPath = debugRemoteModelPath.isNotEmpty
-        ? debugRemoteModelPath
-        : await _storagePaths.modelFilePath(model);
+    final targetPath = await _storagePaths.modelFilePath(model);
     var record = ModelInstallRecord(
       modelId: model.id,
       displayName: model.displayName,
@@ -103,16 +88,32 @@ class ModelLifecycleService {
       return;
     }
 
-    if (capabilities.freeDiskBytes < model.minFreeDiskBytes) {
-      yield _failed(model, ModelFailureReason.insufficientDisk);
+    final runtimeStatus = await _runtime.getStatus();
+    if (runtimeStatus.state == 'ready' &&
+        runtimeStatus.loadedModelId == model.id) {
+      final ready = record.copyWith(
+        status: ModelInstallStatus.ready,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      await _registryStore.upsert(ready);
+      yield ModelInstallProgress(
+        modelId: model.id,
+        status: ModelInstallStatus.ready,
+        progress: 1,
+      );
       return;
     }
 
-    final useDebugRemoteRuntime = debugRemoteRuntimeUrl.isNotEmpty;
-    final readiness = useDebugRemoteRuntime
-        ? const ModelArtifactReadiness.ready()
-        : await _artifactPreparer.readiness(model: model, targetPath: targetPath);
+    final readiness = await _artifactPreparer.readiness(
+      model: model,
+      targetPath: targetPath,
+    );
     if (!readiness.isReady) {
+      if (capabilities.freeDiskBytes < model.minFreeDiskBytes) {
+        yield _failed(model, ModelFailureReason.insufficientDisk);
+        return;
+      }
+
       record = record.copyWith(
         status: ModelInstallStatus.downloading,
         updatedAt: DateTime.now().toUtc(),
@@ -208,36 +209,6 @@ class ModelLifecycleService {
 
     try {
       await _runtime.initialize(model.toLlmModelConfig(targetPath));
-      final response = await _runtime
-          .generateOnce(
-            prompt: smokeTestPrompt,
-            config: smokeTestGenerationConfig,
-          )
-          .timeout(smokeTestTimeout);
-
-      final smokeText = response.text.replaceAll('<pad>', '').trim();
-      if (smokeText.isEmpty) {
-        final failed = record.copyWith(
-          status: ModelInstallStatus.failed,
-          updatedAt: DateTime.now().toUtc(),
-          failureReason: ModelFailureReason.smokeTestFailed,
-          errorMessage: 'Smoke test returned empty output.',
-        );
-        await _registryStore.upsert(failed);
-        yield _failed(model, ModelFailureReason.smokeTestFailed);
-        return;
-      }
-      if (!_looksLikeUsableText(smokeText)) {
-        final failed = record.copyWith(
-          status: ModelInstallStatus.failed,
-          updatedAt: DateTime.now().toUtc(),
-          failureReason: ModelFailureReason.smokeTestFailed,
-          errorMessage: 'Smoke test returned unusable output: $smokeText',
-        );
-        await _registryStore.upsert(failed);
-        yield _failed(model, ModelFailureReason.smokeTestFailed);
-        return;
-      }
     } on Object catch (error) {
       final failed = record.copyWith(
         status: ModelInstallStatus.failed,
@@ -285,17 +256,5 @@ class ModelLifecycleService {
       return ModelFailureReason.hashMismatch;
     }
     return ModelFailureReason.downloadFailed;
-  }
-
-  bool _looksLikeUsableText(String text) {
-    final normalized = text.replaceAll('<pad>', '').trim();
-    if (normalized.isEmpty) {
-      return false;
-    }
-    final asciiLetters = RegExp(r'[A-Za-z]').allMatches(normalized).length;
-    final visibleAscii = RegExp(
-      r'[A-Za-z0-9 .,;:!?()-]',
-    ).allMatches(normalized).length;
-    return asciiLetters >= 8 && visibleAscii / normalized.length >= 0.55;
   }
 }

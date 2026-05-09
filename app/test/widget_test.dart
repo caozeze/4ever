@@ -26,7 +26,7 @@ import 'package:gemma_local/domain/ai/model_manifest.dart';
 import 'package:gemma_local/domain/ai/model_manifest_entry.dart';
 
 void main() {
-  testWidgets('renders chat shell without model download controls', (
+  testWidgets('renders simple in-memory chat shell', (
     WidgetTester tester,
   ) async {
     await _pumpTestApp(tester);
@@ -35,8 +35,7 @@ void main() {
     expect(find.byKey(const ValueKey<String>('gemma_prompt_input')), findsOne);
     expect(find.text('Ask'), findsOneWidget);
     expect(find.text('Prepare model'), findsNothing);
-    expect(find.text('Model Status'), findsNothing);
-    expect(find.text('Free disk'), findsNothing);
+    expect(find.text('Apple Health'), findsNothing);
   });
 
   testWidgets('auto prepares Gemma and renders a text answer', (
@@ -71,7 +70,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    expect(find.text('Apple Health'), findsOneWidget);
+    expect(find.text('Apple Health'), findsNothing);
     expect(find.text('Diet'), findsOneWidget);
 
     await tester.tap(find.text('Sleep'));
@@ -240,9 +239,7 @@ class _FakeLlmRuntime implements LlmRuntime {
     LlmGenerationConfig config = const LlmGenerationConfig(),
   }) async {
     return LlmResponse(
-      text: prompt == ModelLifecycleService.smokeTestPrompt
-          ? 'Take a short walk today.'
-          : '**The answer is 4.**',
+      text: '**The answer is 4.**',
       modelId: _loadedModelId ?? 'unloaded',
     );
   }
@@ -292,7 +289,7 @@ const _testModel = ModelManifestEntry(
   minFreeDiskBytes: 10,
   modalities: <String>['text'],
   supportsThinking: true,
-  maxContextTokens: 32000,
+  maxContextTokens: 2048,
   defaultGenerationConfig: LlmGenerationConfig(
     topK: 64,
     topP: 0.95,
