@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gemma_local/application/ai/health_agent_planner.dart';
 import 'package:gemma_local/application/ai/local_health_agent_service.dart';
 import 'package:gemma_local/application/health/health_data_gateway.dart';
 import 'package:gemma_local/application/health/health_summary_service.dart';
@@ -42,21 +43,26 @@ void main() {
       expect(answer, contains('320.5 kcal'));
       expect(runtime.generatedPrompts, hasLength(1));
       final generatedPrompt = runtime.generatedPrompts.single;
-      expect(generatedPrompt, contains('Health data:'));
+      expect(generatedPrompt, contains('Health data rows:'));
       expect(
         generatedPrompt,
         isNot(contains('Structured local health agent input:')),
       );
       expect(generatedPrompt, isNot(contains('"agent_plan"')));
       expect(generatedPrompt, isNot(contains('"tool_results"')));
-      expect(generatedPrompt, contains('"metric":"activeEnergy"'));
-      expect(generatedPrompt, contains('"value":320.5'));
+      expect(
+        generatedPrompt,
+        contains('["activeKcal","today",320.5,"kcal"]'),
+      );
       expect(generatedPrompt, isNot(contains('"sample_count":2')));
       expect(generatedPrompt.length, lessThan(800));
+      expect(runtime.generatedConfigs.single.maxTokens, 96);
+      expect(runtime.generatedConfigs.single.enableThinking, isFalse);
       expect(gateway.requestedPermissions, isNull);
       expect(traceSink.eventNames, <String>[
         'agent_start',
         'agent_plan',
+        'agent_health_plan_execute',
         'agent_model_tool_call',
         'health_summary_read_start',
         'health_summary_read_finish',
@@ -69,6 +75,15 @@ void main() {
       expect(finishEvent.status, HealthSummaryService.statusOk);
       expect(finishEvent.metricNames, <String>['activeEnergy']);
       expect(finishEvent.sampleCount, 2);
+      final executeEvent = traceSink.events.singleWhere(
+        (event) => event.event == 'agent_health_plan_execute',
+      );
+      expect(
+        executeEvent.status,
+        HealthAgentAnswerMode.directMetricAnswer.name,
+      );
+      expect(executeEvent.actionCount, 1);
+      expect(executeEvent.metricNames, <String>['activeEnergy']);
     },
   );
 
@@ -95,10 +110,9 @@ void main() {
       );
 
       expect(answer, contains('no active energy data'));
-      expect(runtime.generatedPrompts.single, contains('"status":"no_data"'));
       expect(
         runtime.generatedPrompts.single,
-        contains('"reason":"permission_or_no_visible_data"'),
+        contains('["activeKcal","today","no_data","unavailable"]'),
       );
       expect(
         runtime.generatedPrompts.single,
@@ -137,9 +151,10 @@ void main() {
     );
 
     expect(gateway.aggregateReadModes, <String>['latest']);
-    expect(runtime.generatedPrompts.single, contains('"period":"latest"'));
-    expect(runtime.generatedPrompts.single, contains('"metric":"heartRate"'));
-    expect(runtime.generatedPrompts.single, contains('"as_of"'));
+    expect(
+      runtime.generatedPrompts.single,
+      contains('["heartRate","latest",72.0,"bpm","05-10T15:25"]'),
+    );
   });
 
   test('routes current state advice to overview action groups', () async {
@@ -160,14 +175,19 @@ void main() {
           value: 70,
         ),
       ];
+    final traceSink = RecordingAgentTraceSink();
     final service = DartanticLocalHealthAgentService(
       runtime: runtime,
-      healthSummaryService: HealthSummaryService(gateway: gateway),
+      healthSummaryService: HealthSummaryService(
+        gateway: gateway,
+        traceSink: traceSink,
+      ),
+      traceSink: traceSink,
     );
 
     await service.ask(
       prompt: '根据我当前的状态，你看看有什么建议',
-      config: const LlmGenerationConfig(maxTokens: 128),
+      config: const LlmGenerationConfig(maxTokens: 1024),
     );
 
     expect(gateway.aggregateReadModes, <String>[
@@ -175,13 +195,28 @@ void main() {
       'aggregate',
       'latest',
     ]);
+    expect(traceSink.eventNames, contains('agent_health_plan_execute'));
+    final executeEvent = traceSink.events.singleWhere(
+      (event) => event.event == 'agent_health_plan_execute',
+    );
+    expect(executeEvent.status, HealthAgentAnswerMode.overallAdvice.name);
+    expect(executeEvent.actionCount, 3);
+    expect(
+      executeEvent.metricNames,
+      containsAll(<String>['steps', 'sleepSession', 'heartRate']),
+    );
     expect(runtime.generatedPrompts.single, isNot(contains('"overallAdvice"')));
     expect(
       runtime.generatedPrompts.single,
       isNot(contains('"today_activity_overview"')),
     );
-    expect(runtime.generatedPrompts.single, contains('"metric":"steps"'));
-    expect(runtime.generatedPrompts.single, contains('"metric":"heartRate"'));
+    expect(runtime.generatedPrompts.single, contains('["steps","today"'));
+    expect(
+      runtime.generatedPrompts.single,
+      contains('["heartRate","latest"'),
+    );
+    expect(runtime.generatedConfigs.single.maxTokens, 256);
+    expect(runtime.generatedConfigs.single.enableThinking, isFalse);
   });
 
   test('general chat uses a short direct prompt without tool schema', () async {

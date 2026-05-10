@@ -51,23 +51,7 @@ final class HealthAgentPlanner {
       'suggest',
       'recommend',
     ]);
-    final overview = _has(text, const [
-      '当前状态',
-      '当前的状态',
-      '当前情况',
-      '当前的情况',
-      '现在状态',
-      '现在情况',
-      '健康状态',
-      '身体状态',
-      '全部健康',
-      '所有健康',
-      '所有数据',
-      '健康概览',
-      'overall health',
-      'health status',
-      'current state',
-    ]);
+    final overview = _isOverviewRequest(text);
     if (overview) {
       return const HealthAgentPlan(
         needsHealthData: true,
@@ -210,6 +194,49 @@ final class HealthAgentPlanner {
           'latest_visible_sample',
         ),
     ];
+  }
+
+  bool _isOverviewRequest(String text) {
+    if (_has(text, const [
+      '当前状态',
+      '当前的状态',
+      '当前情况',
+      '当前的情况',
+      '现在状态',
+      '现在情况',
+      '健康状态',
+      '身体状态',
+      '全部健康',
+      '所有健康',
+      '所有数据',
+      '所有的数据',
+      '全部数据',
+      '全部的数据',
+      '健康概览',
+      '健康数据',
+      '我的数据',
+      '我的健康',
+      '整体健康',
+      '整体建议',
+      '给我整体健康建议',
+      'overall health',
+      'health status',
+      'current state',
+    ])) {
+      return true;
+    }
+    final mentionsHealthContext = _has(text, const ['数据', '健康', '状态', '身体']);
+    final asksForAnalysis = _has(text, const [
+      '建议',
+      '给点建议',
+      '分析',
+      '分析一下',
+      '看看',
+      '看一下',
+      '怎么样',
+      '如何',
+    ]);
+    return mentionsHealthContext && asksForAnalysis;
   }
 
   bool _has(String text, List<String> words) => words.any(text.contains);

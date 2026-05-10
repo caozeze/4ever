@@ -80,6 +80,17 @@ final class DartanticLocalHealthAgentService
     required LlmGenerationConfig config,
     required HealthAgentPlan plan,
   }) async {
+    _traceSink.record(
+      AgentTraceEvent(
+        event: 'agent_health_plan_execute',
+        metricNames: plan.requestedMetrics
+            .map((metric) => metric.wireName)
+            .toList(growable: false),
+        status: plan.answerMode.name,
+        actionCount: plan.actions.length,
+        phase: 'tool_plan',
+      ),
+    );
     final toolResults = <Map<String, Object?>>[];
     for (final action in plan.actions) {
       final result = await _runHealthSummaryTool(
@@ -99,7 +110,7 @@ final class DartanticLocalHealthAgentService
         plan: plan,
         toolResults: toolResults,
       ),
-      config: config,
+      config: _healthAnswerConfig(config, plan.answerMode),
     );
     _traceSink.record(
       const AgentTraceEvent(event: 'agent_final_answer', phase: 'ask'),
@@ -136,6 +147,26 @@ final class DartanticLocalHealthAgentService
       ),
     );
     return result;
+  }
+
+  LlmGenerationConfig _healthAnswerConfig(
+    LlmGenerationConfig config,
+    HealthAgentAnswerMode answerMode,
+  ) {
+    final cap = switch (answerMode) {
+      HealthAgentAnswerMode.directMetricAnswer => 96,
+      HealthAgentAnswerMode.metricAdvice => 160,
+      HealthAgentAnswerMode.overallAdvice => 256,
+      HealthAgentAnswerMode.generalChat => config.maxTokens,
+    };
+    final maxTokens = config.maxTokens < cap ? config.maxTokens : cap;
+    return LlmGenerationConfig(
+      temperature: config.temperature,
+      topK: config.topK,
+      topP: config.topP,
+      maxTokens: maxTokens,
+      enableThinking: false,
+    );
   }
 
   int? _sampleCount(Map<String, Object?> summary) {
