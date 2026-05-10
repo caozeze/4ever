@@ -7,6 +7,10 @@ final class FakeHealthDataGateway implements HealthDataGateway {
   Set<HealthMetricType>? requestedPermissions;
   final List<Set<HealthMetricType>> permissionRequests =
       <Set<HealthMetricType>>[];
+  final List<Set<HealthMetricType>> aggregateRequests =
+      <Set<HealthMetricType>>[];
+  final List<DateTime> aggregateStarts = <DateTime>[];
+  final List<DateTime> aggregateEnds = <DateTime>[];
   Set<HealthMetricType>? readMetricTypes;
   DateTime? readStart;
   DateTime? readEnd;
@@ -18,7 +22,8 @@ final class FakeHealthDataGateway implements HealthDataGateway {
   Future<bool> isAvailable() async => available;
 
   @override
-  Future<bool> requestReadPermissions(Set<HealthMetricType> metricTypes) async {
+  Future<bool> requestAllReadPermissions() async {
+    final metricTypes = HealthMetricType.values.toSet();
     requestedPermissions = metricTypes;
     permissionRequests.add(metricTypes);
     return permissionGranted;
@@ -36,6 +41,9 @@ final class FakeHealthDataGateway implements HealthDataGateway {
     required DateTime start,
     required DateTime end,
   }) async {
+    aggregateRequests.add(metricTypes);
+    aggregateStarts.add(start);
+    aggregateEnds.add(end);
     readMetricTypes = metricTypes;
     readStart = start;
     readEnd = end;

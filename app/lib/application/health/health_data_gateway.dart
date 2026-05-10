@@ -23,7 +23,7 @@ final class HealthDataAggregate {
 abstract interface class HealthDataGateway {
   Future<bool> isAvailable();
 
-  Future<bool> requestReadPermissions(Set<HealthMetricType> metricTypes);
+  Future<bool> requestAllReadPermissions();
 
   Future<bool> openAppSettings();
 
@@ -43,7 +43,7 @@ final class UnavailableHealthDataGateway implements HealthDataGateway {
   Future<bool> isAvailable() async => false;
 
   @override
-  Future<bool> requestReadPermissions(Set<HealthMetricType> metricTypes) async {
+  Future<bool> requestAllReadPermissions() async {
     return false;
   }
 

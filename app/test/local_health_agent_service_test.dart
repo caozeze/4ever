@@ -48,9 +48,7 @@ void main() {
       expect(runtime.generatedPrompts.single, contains('"activeEnergy"'));
       expect(runtime.generatedPrompts.single, contains('"value":320.5'));
       expect(runtime.generatedPrompts.single, contains('"sample_count":2'));
-      expect(gateway.requestedPermissions, <HealthMetricType>{
-        HealthMetricType.activeEnergy,
-      });
+      expect(gateway.requestedPermissions, isNull);
       expect(traceSink.eventNames, <String>[
         'agent_start',
         'agent_model_tool_call',
@@ -94,8 +92,9 @@ void main() {
       expect(runtime.generatedPrompts.single, contains('"status":"no_data"'));
       expect(
         runtime.generatedPrompts.single,
-        contains('"reason":"permission_or_no_data"'),
+        contains('"reason":"permission_or_no_visible_data"'),
       );
+      expect(runtime.generatedPrompts.single, contains('"requested_metrics"'));
       final finishEvent = traceSink.events.singleWhere(
         (event) => event.event == 'health_summary_read_finish',
       );

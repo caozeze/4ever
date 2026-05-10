@@ -4,6 +4,7 @@ import 'package:dartantic_ai/dartantic_ai.dart';
 
 import '../../domain/ai/llm_generation_config.dart';
 import '../../domain/ai/llm_runtime.dart';
+import '../../domain/health/health_metric_type.dart';
 import '../health/health_summary_service.dart';
 import '../observability/agent_trace_sink.dart';
 import 'local_gemma_provider.dart';
@@ -35,7 +36,7 @@ Use tools when the user asks about current, today, or recent Apple Health facts.
 If a tool result is available, answer from it.
 If a tool result has status ok and metrics are present, answer with those values.
 If a tool result has status permission_denied, no_data, unavailable, or invalid_request, explain that exact status clearly.
-If status is no_data with reason permission_or_no_data, say the app requested Apple Health access but iOS returned zero samples; ask the user to confirm the Health permission for the metric and that Health has data for the period.
+If status is no_data with reason permission_or_no_visible_data, name the requested metric and say iOS returned no visible data; ask the user to check Health > Sharing > Apps > Gemma Local, enable that data type, and confirm Health contains data for the period.
 If HealthKit has no data or permission is missing, say that clearly.
 Do not claim you cannot access Apple Health when a tool result is present.
 Do not diagnose disease, prescribe medication, or provide medical treatment.
@@ -110,7 +111,7 @@ Keep answers concise and user-facing.
     return Tool<Map<String, dynamic>>(
       name: healthSummaryToolName,
       description:
-          'Read local Apple Health aggregate data. Supports period today or last24h and metrics steps, sleepSession, heartRate, hrv, activeEnergy.',
+          'Read local Apple Health aggregate data after the user has authorized Apple Health once. Supports period today or last24h and metrics steps, sleepSession, workoutSession, activeEnergy, basalEnergy, exerciseTime, standTime, distanceWalkingRunning, flightsClimbed, heartRate, restingHeartRate, walkingHeartRateAverage, hrv, weight, mindfulMinutes.',
       inputSchema: S.object(
         properties: <String, Schema>{
           'period': S.string(),
@@ -198,7 +199,7 @@ ${userPrompt.trim()}
 Tool result from $healthSummaryToolName:
 ${jsonEncode(toolResult)}
 
-Answer the user from the tool result. If status is ok and metrics are present, give the metric values directly. If status is no_data with reason permission_or_no_data, explain that Apple Health returned no samples after the app requested access, so the user should confirm the Health permission for the metric and that Health has data for the period. Do not say you cannot access Apple Health when status is ok.
+Answer the user from the tool result. If status is ok and metrics are present, give the metric values directly. If status is no_data with reason permission_or_no_visible_data, name the requested metric and explain that iOS returned no visible data after the app requested access, so the user should check Health > Sharing > Apps > Gemma Local, enable that data type, and confirm Health contains data for the period. Do not say you cannot access Apple Health when status is ok.
 Assistant:
 ''';
   }
@@ -207,7 +208,7 @@ Assistant:
     final text = prompt.trim().toLowerCase();
     final metrics = <String>[];
     if (_containsAny(text, const <String>['步', 'steps', 'walk'])) {
-      metrics.add(HealthSummaryService.metricSteps);
+      metrics.add(HealthMetricType.steps.wireName);
     }
     if (_containsAny(text, const <String>[
       '卡路里',
@@ -216,16 +217,53 @@ Assistant:
       'calorie',
       'active energy',
     ])) {
-      metrics.add(HealthSummaryService.metricActiveEnergy);
+      metrics.add(HealthMetricType.activeEnergy.wireName);
     }
     if (_containsAny(text, const <String>['心率', 'heart rate'])) {
-      metrics.add(HealthSummaryService.metricHeartRate);
+      metrics.add(HealthMetricType.heartRate.wireName);
+    }
+    if (_containsAny(text, const <String>['静息心率', 'resting heart'])) {
+      metrics
+        ..remove(HealthMetricType.heartRate.wireName)
+        ..add(HealthMetricType.restingHeartRate.wireName);
     }
     if (_containsAny(text, const <String>['hrv', '心率变异', '心率变异性'])) {
-      metrics.add(HealthSummaryService.metricHrv);
+      metrics.add(HealthMetricType.hrv.wireName);
     }
     if (_containsAny(text, const <String>['睡', 'sleep'])) {
-      metrics.add(HealthSummaryService.metricSleepSession);
+      metrics.add(HealthMetricType.sleepSession.wireName);
+    }
+    if (_containsAny(text, const <String>[
+      '运动',
+      '健身',
+      '锻炼',
+      'workout',
+      'exercise',
+    ])) {
+      metrics.add(HealthMetricType.workoutSession.wireName);
+    }
+    if (_containsAny(text, const <String>['体重', 'weight'])) {
+      metrics.add(HealthMetricType.weight.wireName);
+    }
+    if (_containsAny(text, const <String>['正念', '冥想', 'mindful'])) {
+      metrics.add(HealthMetricType.mindfulMinutes.wireName);
+    }
+    if (_containsAny(text, const <String>['距离', 'distance'])) {
+      metrics.add(HealthMetricType.distanceWalkingRunning.wireName);
+    }
+    if (_containsAny(text, const <String>['楼层', '爬楼', 'flights'])) {
+      metrics.add(HealthMetricType.flightsClimbed.wireName);
+    }
+    if (_containsAny(text, const <String>[
+      '全部健康',
+      '所有健康',
+      '健康概览',
+      'overall health',
+      'all health',
+    ])) {
+      metrics
+        ..clear()
+        ..addAll(HealthMetricType.values.map((metric) => metric.wireName));
     }
     if (metrics.isEmpty) {
       return null;
@@ -233,7 +271,7 @@ Assistant:
 
     final sleepOnly =
         metrics.length == 1 &&
-        metrics.single == HealthSummaryService.metricSleepSession;
+        metrics.single == HealthMetricType.sleepSession.wireName;
     final period =
         sleepOnly ||
             _containsAny(text, const <String>[

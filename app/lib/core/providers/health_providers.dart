@@ -33,7 +33,6 @@ final healthAuthorizationServiceProvider = Provider<HealthAuthorizationService>(
   (Ref ref) {
     return HealthAuthorizationService(
       gateway: ref.watch(healthDataGatewayProvider),
-      healthSummaryService: ref.watch(healthSummaryServiceProvider),
     );
   },
 );

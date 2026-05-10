@@ -105,6 +105,14 @@ void main() {
       find.byKey(const ValueKey<String>('health_authorize_button')),
       findsOne,
     );
+    expect(find.text('Authorize Apple Health Once'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('health_authorize_steps_button')),
+      findsNothing,
+    );
+    expect(find.text('Steps'), findsNothing);
+    expect(find.text('Sleep'), findsNothing);
+    expect(find.text('Heart Rate'), findsNothing);
 
     await tester.tap(
       find.byKey(const ValueKey<String>('health_authorize_button')),
@@ -112,7 +120,15 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(healthAuthorizationService.requestCount, 1);
-    expect(find.textContaining('Request completed'), findsOneWidget);
+    expect(
+      find.textContaining('Apple Health request completed once'),
+      findsOneWidget,
+    );
+    expect(find.text('Needs attention'), findsOneWidget);
+    expect(find.textContaining('Sleep'), findsOne);
+    expect(find.textContaining('Heart Rate'), findsOne);
+    expect(find.textContaining('Weight'), findsOne);
+    expect(find.textContaining('iOS returned no visible data'), findsOne);
   });
 }
 
@@ -274,18 +290,17 @@ class _MemoryRegistryStore implements ModelRegistryStore {
 final class _FakeHealthAuthorizationService
     implements HealthAuthorizationService {
   int requestCount = 0;
-  final List<HealthMetricType> metricRequests = <HealthMetricType>[];
   bool openSettingsCalled = false;
 
   @override
   Future<HealthAuthorizationResult> requestDefaultReadPermissions() async {
     requestCount += 1;
     return const HealthAuthorizationResult(
-      status: HealthAuthorizationResult.statusCompleted,
+      status: HealthAuthorizationService.statusCompleted,
       metrics: <HealthMetricAuthorizationResult>[
         HealthMetricAuthorizationResult(
           metric: HealthMetricType.steps,
-          status: HealthMetricAuthorizationResult.statusReadable,
+          status: HealthAuthorizationService.statusReadable,
           summary: <String, Object?>{
             'value': 1234,
             'unit': 'count',
@@ -294,32 +309,25 @@ final class _FakeHealthAuthorizationService
         ),
         HealthMetricAuthorizationResult(
           metric: HealthMetricType.sleepSession,
-          status: HealthMetricAuthorizationResult.statusNoVisibleData,
+          status: HealthAuthorizationService.statusNoVisibleData,
         ),
         HealthMetricAuthorizationResult(
           metric: HealthMetricType.heartRate,
-          status: HealthMetricAuthorizationResult.statusNoVisibleData,
+          status: HealthAuthorizationService.statusNoVisibleData,
         ),
         HealthMetricAuthorizationResult(
           metric: HealthMetricType.hrv,
-          status: HealthMetricAuthorizationResult.statusNoVisibleData,
+          status: HealthAuthorizationService.statusNoVisibleData,
         ),
         HealthMetricAuthorizationResult(
           metric: HealthMetricType.activeEnergy,
-          status: HealthMetricAuthorizationResult.statusNoVisibleData,
+          status: HealthAuthorizationService.statusNoVisibleData,
+        ),
+        HealthMetricAuthorizationResult(
+          metric: HealthMetricType.weight,
+          status: HealthAuthorizationService.statusNoVisibleData,
         ),
       ],
-    );
-  }
-
-  @override
-  Future<HealthMetricAuthorizationResult> requestMetricReadPermission(
-    HealthMetricType metric,
-  ) async {
-    metricRequests.add(metric);
-    return HealthMetricAuthorizationResult(
-      metric: metric,
-      status: HealthMetricAuthorizationResult.statusNoVisibleData,
     );
   }
 

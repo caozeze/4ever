@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/health/health_authorization_service.dart';
-import '../../application/health/health_summary_service.dart';
 import '../../core/providers/health_providers.dart';
 import '../../domain/health/health_metric_type.dart';
 import '../app_navigation_drawer.dart';
@@ -19,7 +18,6 @@ class HealthPermissionsPage extends ConsumerStatefulWidget {
 
 class _HealthPermissionsPageState extends ConsumerState<HealthPermissionsPage> {
   bool _requesting = false;
-  final Set<HealthMetricType> _requestingMetrics = <HealthMetricType>{};
   HealthAuthorizationResult? _result;
   Object? _error;
 
@@ -53,59 +51,8 @@ class _HealthPermissionsPageState extends ConsumerState<HealthPermissionsPage> {
     }
   }
 
-  Future<void> _requestMetric(HealthMetricType metric) async {
-    setState(() {
-      _requestingMetrics.add(metric);
-      _error = null;
-    });
-    try {
-      final service = ref.read(healthAuthorizationServiceProvider);
-      final result = await service.requestMetricReadPermission(metric);
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _result = _mergeMetricResult(result);
-      });
-    } on Object catch (error) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _error = error;
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _requestingMetrics.remove(metric);
-        });
-      }
-    }
-  }
-
   Future<void> _openSettings() async {
     await ref.read(healthAuthorizationServiceProvider).openAppSettings();
-  }
-
-  HealthAuthorizationResult _mergeMetricResult(
-    HealthMetricAuthorizationResult metricResult,
-  ) {
-    final current = _result;
-    final metrics = <HealthMetricAuthorizationResult>[
-      if (current != null) ...current.metrics,
-    ];
-    final index = metrics.indexWhere(
-      (result) => result.metric == metricResult.metric,
-    );
-    if (index >= 0) {
-      metrics[index] = metricResult;
-    } else {
-      metrics.add(metricResult);
-    }
-    return HealthAuthorizationResult(
-      status: HealthAuthorizationResult.statusCompleted,
-      metrics: metrics,
-    );
   }
 
   @override
@@ -122,21 +69,13 @@ class _HealthPermissionsPageState extends ConsumerState<HealthPermissionsPage> {
           Text('Apple Health Access', style: theme.textTheme.headlineSmall),
           const SizedBox(height: 8),
           Text(
-            'Authorize local Apple Health reads for chat answers. Data stays on this device.',
+            'Authorize Apple Health once so the local assistant can read the health data it needs on demand.',
             style: theme.textTheme.bodyMedium,
           ),
-          const SizedBox(height: 24),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: HealthSummaryMetricLabels.defaultMetrics
-                .map(
-                  (metric) => Chip(
-                    avatar: Icon(_iconFor(metric), size: 18),
-                    label: Text(metric.label),
-                  ),
-                )
-                .toList(growable: false),
+          const SizedBox(height: 8),
+          Text(
+            'Data stays on this device. The app requests all supported Health data types in one Apple Health permission request.',
+            style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 24),
           Align(
@@ -150,7 +89,9 @@ class _HealthPermissionsPageState extends ConsumerState<HealthPermissionsPage> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.health_and_safety),
-              label: Text(_requesting ? 'Requesting...' : 'Authorize Health'),
+              label: Text(
+                _requesting ? 'Requesting...' : 'Authorize Apple Health Once',
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -164,40 +105,18 @@ class _HealthPermissionsPageState extends ConsumerState<HealthPermissionsPage> {
             ),
           ),
           const SizedBox(height: 20),
-          _PermissionStatus(
-            result: _result,
-            error: _error,
-            requestingMetrics: _requestingMetrics,
-            onRequestMetric: _requestMetric,
-          ),
+          _PermissionStatus(result: _result, error: _error),
         ],
       ),
     );
   }
-
-  IconData _iconFor(HealthMetricType metric) {
-    return switch (metric) {
-      HealthMetricType.steps => Icons.directions_walk,
-      HealthMetricType.sleepSession => Icons.bedtime,
-      HealthMetricType.heartRate => Icons.monitor_heart,
-      HealthMetricType.hrv => Icons.timeline,
-      HealthMetricType.activeEnergy => Icons.local_fire_department,
-    };
-  }
 }
 
 class _PermissionStatus extends StatelessWidget {
-  const _PermissionStatus({
-    required this.result,
-    required this.error,
-    required this.requestingMetrics,
-    required this.onRequestMetric,
-  });
+  const _PermissionStatus({required this.result, required this.error});
 
   final HealthAuthorizationResult? result;
   final Object? error;
-  final Set<HealthMetricType> requestingMetrics;
-  final ValueChanged<HealthMetricType> onRequestMetric;
 
   @override
   Widget build(BuildContext context) {
@@ -212,42 +131,47 @@ class _PermissionStatus extends StatelessWidget {
     }
     final result = this.result;
     if (result == null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text(
-            'Tap authorize to show the Apple Health permission sheet when iOS needs confirmation. You can also retry each metric separately.',
-            style: theme.textTheme.bodyMedium,
-          ),
-          const SizedBox(height: 12),
-          for (final metric in HealthSummaryMetricLabels.defaultMetrics)
-            _MetricStatusTile(
-              metric: metric,
-              requesting: requestingMetrics.contains(metric),
-              onRequest: () => onRequestMetric(metric),
-            ),
-        ],
+      return Text(
+        'Tap authorize once. If iOS does not show the permission sheet, open Settings or Health and enable Gemma Local health access.',
+        style: theme.textTheme.bodyMedium,
       );
     }
-    if (result.status == HealthAuthorizationResult.statusCompleted) {
-      final byMetric = <HealthMetricType, HealthMetricAuthorizationResult>{
-        for (final metric in result.metrics) metric.metric: metric,
-      };
+    if (result.metrics.isNotEmpty) {
+      final readableCount = result.metrics
+          .where(
+            (metric) =>
+                metric.status == HealthAuthorizationService.statusReadable,
+          )
+          .length;
+      final missing = result.metrics
+          .where(
+            (metric) =>
+                metric.status == HealthAuthorizationService.statusNoVisibleData,
+          )
+          .toList(growable: false);
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            'Request completed. iOS does not expose read permission state to apps, so the app verifies whether data is visible.',
+            result.status == HealthAuthorizationService.statusCompleted
+                ? 'Apple Health request completed once. Visible health categories: $readableCount/${result.metrics.length}.'
+                : 'Apple Health request failed or did not complete. Retry once, or check iOS Health permissions for Gemma Local.',
             style: theme.textTheme.bodyMedium,
           ),
-          const SizedBox(height: 12),
-          for (final metric in HealthSummaryMetricLabels.defaultMetrics)
-            _MetricStatusTile(
-              metric: metric,
-              result: byMetric[metric],
-              requesting: requestingMetrics.contains(metric),
-              onRequest: () => onRequestMetric(metric),
+          if (missing.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 12),
+            Text('Needs attention', style: theme.textTheme.titleSmall),
+            const SizedBox(height: 6),
+            Text(
+              missing.map((metric) => metric.metric.displayName).join(', '),
+              style: theme.textTheme.bodySmall,
             ),
+            const SizedBox(height: 4),
+            Text(
+              'iOS returned no visible data. Check Health > Sharing > Apps > Gemma Local and make sure these data types are enabled, and confirm Health contains data.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
         ],
       );
     }
@@ -257,100 +181,5 @@ class _PermissionStatus extends StatelessWidget {
         color: theme.colorScheme.error,
       ),
     );
-  }
-}
-
-class _MetricStatusTile extends StatelessWidget {
-  const _MetricStatusTile({
-    required this.metric,
-    required this.requesting,
-    required this.onRequest,
-    this.result,
-  });
-
-  final HealthMetricType metric;
-  final HealthMetricAuthorizationResult? result;
-  final bool requesting;
-  final VoidCallback onRequest;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final readable =
-        result?.status == HealthMetricAuthorizationResult.statusReadable;
-    final unavailable =
-        result?.status == HealthSummaryService.statusUnavailable;
-    final permissionDenied =
-        result?.status == HealthSummaryService.statusPermissionDenied;
-    final color = readable
-        ? theme.colorScheme.primary
-        : unavailable || permissionDenied
-        ? theme.colorScheme.error
-        : theme.colorScheme.secondary;
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: Icon(readable ? Icons.check_circle : Icons.info, color: color),
-      title: Text(metric.label),
-      subtitle: Text(_statusText()),
-      trailing: OutlinedButton(
-        key: ValueKey<String>('health_authorize_${metric.wireName}_button'),
-        onPressed: requesting ? null : onRequest,
-        child: Text(requesting ? 'Checking...' : 'Authorize'),
-      ),
-    );
-  }
-
-  String _statusText() {
-    final result = this.result;
-    if (result == null) {
-      return 'Not checked yet.';
-    }
-    if (result.status == HealthMetricAuthorizationResult.statusReadable) {
-      return 'Readable${_summaryText()}';
-    }
-    if (result.status == HealthSummaryService.statusUnavailable) {
-      return 'Unavailable';
-    }
-    if (result.status == HealthSummaryService.statusPermissionDenied) {
-      return 'Request failed or was not completed.';
-    }
-    return 'No visible data. Confirm this Health permission toggle and that Health has data for the period.';
-  }
-
-  String _summaryText() {
-    final result = this.result;
-    final summary = result?.summary;
-    if (summary == null) {
-      return '';
-    }
-    final sampleCount = summary['sample_count'];
-    final value = summary['value'];
-    final average = summary['average'];
-    final unit = summary['unit'];
-    final amount = value ?? average;
-    if (amount == null || unit == null || sampleCount == null) {
-      return '';
-    }
-    return ' - $amount $unit, sample count $sampleCount';
-  }
-}
-
-extension HealthSummaryMetricLabels on HealthMetricType {
-  static const List<HealthMetricType> defaultMetrics = <HealthMetricType>[
-    HealthMetricType.steps,
-    HealthMetricType.sleepSession,
-    HealthMetricType.heartRate,
-    HealthMetricType.hrv,
-    HealthMetricType.activeEnergy,
-  ];
-
-  String get label {
-    return switch (this) {
-      HealthMetricType.steps => 'Steps',
-      HealthMetricType.sleepSession => 'Sleep',
-      HealthMetricType.heartRate => 'Heart Rate',
-      HealthMetricType.hrv => 'HRV',
-      HealthMetricType.activeEnergy => 'Active Energy',
-    };
   }
 }

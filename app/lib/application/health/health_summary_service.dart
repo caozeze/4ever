@@ -17,27 +17,12 @@ final class HealthSummaryService {
 
   static const String reasonInvalidRequest = 'invalid_request';
   static const String reasonHealthKitUnavailable = 'healthkit_unavailable';
-  static const String reasonPermissionDenied = 'permission_denied';
-  static const String reasonNoMatchingSamples = 'no_matching_samples';
-  static const String reasonPermissionOrNoData = 'permission_or_no_data';
+  static const String reasonPermissionOrNoVisibleData =
+      'permission_or_no_visible_data';
   static const String reasonReadFailed = 'read_failed';
 
   static const String periodToday = 'today';
   static const String periodLast24h = 'last24h';
-  static const String metricSteps = 'steps';
-  static const String metricSleepSession = 'sleepSession';
-  static const String metricHeartRate = 'heartRate';
-  static const String metricHrv = 'hrv';
-  static const String metricActiveEnergy = 'activeEnergy';
-
-  static const Set<String> supportedPeriods = <String>{'today', 'last24h'};
-  static const Set<HealthMetricType> supportedMetrics = <HealthMetricType>{
-    HealthMetricType.steps,
-    HealthMetricType.sleepSession,
-    HealthMetricType.heartRate,
-    HealthMetricType.hrv,
-    HealthMetricType.activeEnergy,
-  };
 
   final HealthDataGateway _gateway;
   final AgentTraceSink _traceSink;
@@ -46,18 +31,15 @@ final class HealthSummaryService {
     required String period,
     required List<String> metrics,
     DateTime? now,
-    bool requestPermission = true,
   }) async {
     final metricTypes = _parseMetrics(metrics);
-    if (!supportedPeriods.contains(period) || metricTypes == null) {
-      final result = <String, Object?>{
-        'status': statusInvalidRequest,
-        'reason': reasonInvalidRequest,
-        'period': period,
-        'metrics': <String, Object?>{},
-      };
-      _recordFinish(result, metrics);
-      return result;
+    if (!_isSupportedPeriod(period) || metricTypes == null) {
+      return _finish(
+        status: statusInvalidRequest,
+        reason: reasonInvalidRequest,
+        period: period,
+        metricNames: metrics,
+      );
     }
 
     final metricNames = _wireNames(metricTypes);
@@ -71,28 +53,12 @@ final class HealthSummaryService {
     );
 
     if (!await _gateway.isAvailable()) {
-      final result = <String, Object?>{
-        'status': statusUnavailable,
-        'reason': reasonHealthKitUnavailable,
-        'period': period,
-        'metrics': <String, Object?>{},
-      };
-      _recordFinish(result, metricNames);
-      return result;
-    }
-
-    if (requestPermission) {
-      final granted = await _gateway.requestReadPermissions(metricTypes);
-      if (!granted) {
-        final result = <String, Object?>{
-          'status': statusPermissionDenied,
-          'reason': reasonPermissionDenied,
-          'period': period,
-          'metrics': <String, Object?>{},
-        };
-        _recordFinish(result, metricNames);
-        return result;
-      }
+      return _finish(
+        status: statusUnavailable,
+        reason: reasonHealthKitUnavailable,
+        period: period,
+        metricNames: metricNames,
+      );
     }
 
     final range = _rangeFor(period: period, now: now ?? DateTime.now());
@@ -104,34 +70,36 @@ final class HealthSummaryService {
         end: range.end,
       );
     } on Object {
-      final result = <String, Object?>{
-        'status': statusUnavailable,
-        'reason': reasonReadFailed,
-        'period': period,
-        'metrics': <String, Object?>{},
-      };
-      _recordFinish(result, metricNames);
-      return result;
-    }
-    final metricsJson = <String, Object?>{};
-    for (final aggregate in aggregates) {
-      if (metricTypes.contains(aggregate.type)) {
-        final value = _aggregateJson(aggregate);
-        if (value != null) {
-          metricsJson[aggregate.type.wireName] = value;
-        }
-      }
+      return _finish(
+        status: statusUnavailable,
+        reason: reasonReadFailed,
+        period: period,
+        metricNames: metricNames,
+      );
     }
 
-    final status = metricsJson.isEmpty ? statusNoData : statusOk;
-    final result = <String, Object?>{
-      'status': status,
-      if (status == statusNoData) 'reason': reasonPermissionOrNoData,
-      'period': period,
-      'metrics': metricsJson,
-    };
-    _recordFinish(result, metricNames);
-    return result;
+    final metricsJson = <String, Object?>{};
+    for (final aggregate in aggregates) {
+      final value = _aggregateJson(aggregate);
+      if (value != null) {
+        metricsJson[aggregate.type.wireName] = value;
+      }
+    }
+    if (metricsJson.isEmpty) {
+      return _finish(
+        status: statusNoData,
+        reason: reasonPermissionOrNoVisibleData,
+        period: period,
+        metricNames: metricNames,
+        requestedMetrics: metricNames,
+      );
+    }
+    return _finish(
+      status: statusOk,
+      period: period,
+      metricNames: metricNames,
+      metrics: metricsJson,
+    );
   }
 
   Set<HealthMetricType>? _parseMetrics(List<String> metrics) {
@@ -141,7 +109,7 @@ final class HealthSummaryService {
     final parsed = <HealthMetricType>{};
     for (final metric in metrics) {
       final type = HealthMetricTypeNames.fromWireName(metric);
-      if (type == null || !supportedMetrics.contains(type)) {
+      if (type == null) {
         return null;
       }
       parsed.add(type);
@@ -149,13 +117,20 @@ final class HealthSummaryService {
     return parsed;
   }
 
+  bool _isSupportedPeriod(String period) {
+    return period == periodToday || period == periodLast24h;
+  }
+
   ({DateTime start, DateTime end}) _rangeFor({
     required String period,
     required DateTime now,
   }) {
     return switch (period) {
-      'today' => (start: DateTime(now.year, now.month, now.day), end: now),
-      'last24h' => (start: now.subtract(const Duration(hours: 24)), end: now),
+      periodToday => (start: DateTime(now.year, now.month, now.day), end: now),
+      periodLast24h => (
+        start: now.subtract(const Duration(hours: 24)),
+        end: now,
+      ),
       _ => throw ArgumentError.value(period, 'period'),
     };
   }
@@ -164,64 +139,60 @@ final class HealthSummaryService {
     if (aggregate.sampleCount <= 0) {
       return null;
     }
-
-    return switch (aggregate.type) {
-      HealthMetricType.steps => <String, Object?>{
-        if (aggregate.value != null) 'value': aggregate.value!.round(),
+    final metric = aggregate.type;
+    if (metric.isAverageMetric) {
+      return <String, Object?>{
+        if (aggregate.average != null) 'average': _roundOne(aggregate.average!),
+        if (aggregate.min != null) 'min': _roundOne(aggregate.min!),
+        if (aggregate.max != null) 'max': _roundOne(aggregate.max!),
         'unit': aggregate.unit,
         'sample_count': aggregate.sampleCount,
-      },
-      HealthMetricType.sleepSession => <String, Object?>{
-        if (aggregate.value != null) 'value': _roundOne(aggregate.value!),
-        'unit': aggregate.unit,
-        'sample_count': aggregate.sampleCount,
-      },
-      HealthMetricType.heartRate ||
-      HealthMetricType.hrv => _averageJson(aggregate),
-      HealthMetricType.activeEnergy => <String, Object?>{
-        if (aggregate.value != null) 'value': _roundOne(aggregate.value!),
-        'unit': aggregate.unit,
-        'sample_count': aggregate.sampleCount,
-      },
-    };
-  }
-
-  Map<String, Object?> _averageJson(HealthDataAggregate aggregate) {
+      };
+    }
     return <String, Object?>{
-      if (aggregate.average != null) 'average': _roundOne(aggregate.average!),
-      if (aggregate.min != null) 'min': _roundOne(aggregate.min!),
-      if (aggregate.max != null) 'max': _roundOne(aggregate.max!),
+      if (aggregate.value != null)
+        'value': metric.isRoundedCountMetric
+            ? aggregate.value!.round()
+            : _roundOne(aggregate.value!),
       'unit': aggregate.unit,
       'sample_count': aggregate.sampleCount,
     };
   }
 
-  double _roundOne(double value) {
-    return double.parse(value.toStringAsFixed(1));
+  Map<String, Object?> _finish({
+    required String status,
+    required String period,
+    required List<String> metricNames,
+    String? reason,
+    Map<String, Object?> metrics = const <String, Object?>{},
+    List<String>? requestedMetrics,
+  }) {
+    final result = <String, Object?>{
+      'status': status,
+      if (reason case final String reason) 'reason': reason,
+      if (requestedMetrics case final List<String> requestedMetrics)
+        'requested_metrics': requestedMetrics,
+      'period': period,
+      'metrics': metrics,
+    };
+    _traceSink.record(
+      AgentTraceEvent(
+        event: 'health_summary_read_finish',
+        metricNames: metricNames,
+        period: period,
+        status: status,
+        sampleCount: _sampleCount(metrics),
+        phase: 'health_summary',
+      ),
+    );
+    return result;
   }
 
   List<String> _wireNames(Set<HealthMetricType> metricTypes) {
     return metricTypes.map((metricType) => metricType.wireName).toList();
   }
 
-  void _recordFinish(Map<String, Object?> result, List<String> metricNames) {
-    _traceSink.record(
-      AgentTraceEvent(
-        event: 'health_summary_read_finish',
-        metricNames: metricNames,
-        period: result['period'] as String?,
-        status: result['status'] as String?,
-        sampleCount: _sampleCount(result),
-        phase: 'health_summary',
-      ),
-    );
-  }
-
-  int? _sampleCount(Map<String, Object?> result) {
-    final metrics = result['metrics'];
-    if (metrics is! Map) {
-      return null;
-    }
+  int? _sampleCount(Map<String, Object?> metrics) {
     var count = 0;
     for (final value in metrics.values) {
       if (value is Map && value['sample_count'] is num) {
@@ -229,5 +200,9 @@ final class HealthSummaryService {
       }
     }
     return count == 0 ? null : count;
+  }
+
+  double _roundOne(double value) {
+    return double.parse(value.toStringAsFixed(1));
   }
 }

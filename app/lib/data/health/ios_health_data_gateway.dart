@@ -13,8 +13,8 @@ final class IosHealthDataGateway implements HealthDataGateway {
   }
 
   @override
-  Future<bool> requestReadPermissions(Set<HealthMetricType> metricTypes) {
-    return _api.requestReadPermissions(_wireNames(metricTypes));
+  Future<bool> requestAllReadPermissions() {
+    return _api.requestAllReadPermissions();
   }
 
   @override

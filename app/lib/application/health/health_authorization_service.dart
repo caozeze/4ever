@@ -3,94 +3,104 @@ import 'health_data_gateway.dart';
 import 'health_summary_service.dart';
 
 class HealthAuthorizationService {
-  const HealthAuthorizationService({
-    required HealthDataGateway gateway,
-    required HealthSummaryService healthSummaryService,
-  }) : _gateway = gateway,
-       _healthSummaryService = healthSummaryService;
+  const HealthAuthorizationService({required HealthDataGateway gateway})
+    : _gateway = gateway;
+
+  static const String statusCompleted = 'authorization_request_completed';
+  static const String statusReadable = 'readable';
+  static const String statusNoVisibleData = 'no_visible_data';
+  static const String reasonPermissionOrNoVisibleData =
+      'permission_or_no_visible_data';
+
+  static const List<HealthMetricType> defaultMetrics = HealthMetricType.values;
 
   final HealthDataGateway _gateway;
-  final HealthSummaryService _healthSummaryService;
-
-  static const List<HealthMetricType> defaultMetrics = <HealthMetricType>[
-    HealthMetricType.steps,
-    HealthMetricType.sleepSession,
-    HealthMetricType.heartRate,
-    HealthMetricType.hrv,
-    HealthMetricType.activeEnergy,
-  ];
 
   Future<HealthAuthorizationResult> requestDefaultReadPermissions() async {
-    final results = <HealthMetricAuthorizationResult>[];
-    for (final metric in defaultMetrics) {
-      results.add(await requestMetricReadPermission(metric));
-    }
-    final status =
-        results.every(
-          (result) => result.status == HealthSummaryService.statusUnavailable,
-        )
-        ? HealthSummaryService.statusUnavailable
-        : HealthAuthorizationResult.statusCompleted;
-    return HealthAuthorizationResult(status: status, metrics: results);
-  }
-
-  Future<HealthMetricAuthorizationResult> requestMetricReadPermission(
-    HealthMetricType metric,
-  ) async {
     if (!await _gateway.isAvailable()) {
-      return HealthMetricAuthorizationResult(
-        metric: metric,
-        status: HealthSummaryService.statusUnavailable,
-      );
+      return _resultForAll(HealthSummaryService.statusUnavailable);
     }
-    final completed = await _gateway.requestReadPermissions(<HealthMetricType>{
-      metric,
-    });
-    if (!completed) {
-      return HealthMetricAuthorizationResult(
-        metric: metric,
-        status: HealthSummaryService.statusPermissionDenied,
-      );
+    if (!await _gateway.requestAllReadPermissions()) {
+      return _resultForAll(HealthSummaryService.statusPermissionDenied);
     }
-    final summary = await _healthSummaryService.getHealthSummary(
-      period: _verificationPeriod(metric),
-      metrics: <String>[metric.wireName],
-      requestPermission: false,
-    );
-    return _metricResult(metric, summary);
-  }
 
-  Future<bool> openAppSettings() {
-    return _gateway.openAppSettings();
-  }
-
-  String _verificationPeriod(HealthMetricType metric) {
-    return metric == HealthMetricType.sleepSession
-        ? HealthSummaryService.periodLast24h
-        : HealthSummaryService.periodToday;
-  }
-
-  HealthMetricAuthorizationResult _metricResult(
-    HealthMetricType metric,
-    Map<String, Object?> summary,
-  ) {
-    final metrics = summary['metrics'];
-    final metricSummary = metrics is Map ? metrics[metric.wireName] : null;
-    if (metricSummary is Map) {
-      return HealthMetricAuthorizationResult(
-        metric: metric,
-        status: HealthMetricAuthorizationResult.statusReadable,
-        summary: Map<String, Object?>.from(metricSummary),
-      );
-    }
-    final status = summary['status'];
-    return HealthMetricAuthorizationResult(
-      metric: metric,
-      status: status == HealthSummaryService.statusUnavailable
-          ? HealthSummaryService.statusUnavailable
-          : HealthMetricAuthorizationResult.statusNoVisibleData,
+    final visible = await _visibleSummaries(DateTime.now());
+    return HealthAuthorizationResult(
+      status: statusCompleted,
+      metrics: <HealthMetricAuthorizationResult>[
+        for (final metric in defaultMetrics)
+          HealthMetricAuthorizationResult(
+            metric: metric,
+            status: visible.containsKey(metric)
+                ? statusReadable
+                : statusNoVisibleData,
+            reason: visible.containsKey(metric)
+                ? null
+                : reasonPermissionOrNoVisibleData,
+            summary: visible[metric],
+          ),
+      ],
     );
   }
+
+  Future<bool> openAppSettings() => _gateway.openAppSettings();
+
+  Future<Map<HealthMetricType, Map<String, Object?>>> _visibleSummaries(
+    DateTime now,
+  ) async {
+    final visible = <HealthMetricType, Map<String, Object?>>{};
+    for (final group in _verificationGroups(now)) {
+      final aggregates = await _gateway.readAggregates(
+        metricTypes: group.metrics,
+        start: group.start,
+        end: now,
+      );
+      for (final aggregate in aggregates) {
+        if (aggregate.sampleCount > 0) {
+          visible[aggregate.type] = <String, Object?>{
+            if (aggregate.value != null) 'value': aggregate.value,
+            if (aggregate.average != null) 'average': aggregate.average,
+            'unit': aggregate.unit,
+            'sample_count': aggregate.sampleCount,
+            'window': aggregate.type.verificationWindow,
+          };
+        }
+      }
+    }
+    return visible;
+  }
+
+  List<_VerificationGroup> _verificationGroups(DateTime now) {
+    final groups = <String, _VerificationGroup>{};
+    for (final metric in defaultMetrics) {
+      groups.update(
+        metric.verificationWindow,
+        (group) => group..metrics.add(metric),
+        ifAbsent: () => _VerificationGroup(
+          start: now.subtract(metric.verificationLookback),
+          metrics: <HealthMetricType>{metric},
+        ),
+      );
+    }
+    return groups.values.toList(growable: false);
+  }
+
+  HealthAuthorizationResult _resultForAll(String status) {
+    return HealthAuthorizationResult(
+      status: status,
+      metrics: <HealthMetricAuthorizationResult>[
+        for (final metric in defaultMetrics)
+          HealthMetricAuthorizationResult(metric: metric, status: status),
+      ],
+    );
+  }
+}
+
+final class _VerificationGroup {
+  _VerificationGroup({required this.start, required this.metrics});
+
+  final DateTime start;
+  final Set<HealthMetricType> metrics;
 }
 
 final class HealthAuthorizationResult {
@@ -98,8 +108,6 @@ final class HealthAuthorizationResult {
     required this.status,
     required this.metrics,
   });
-
-  static const String statusCompleted = 'authorization_request_completed';
 
   final String status;
   final List<HealthMetricAuthorizationResult> metrics;
@@ -110,12 +118,11 @@ final class HealthMetricAuthorizationResult {
     required this.metric,
     required this.status,
     this.summary,
+    this.reason,
   });
-
-  static const String statusReadable = 'readable';
-  static const String statusNoVisibleData = 'no_visible_data';
 
   final HealthMetricType metric;
   final String status;
   final Map<String, Object?>? summary;
+  final String? reason;
 }

@@ -13,10 +13,9 @@ class IosHealthDataApi {
     return await _methodChannel.invokeMethod<bool>('isAvailable') ?? false;
   }
 
-  Future<bool> requestReadPermissions(List<String> metricTypes) async {
+  Future<bool> requestAllReadPermissions() async {
     return await _methodChannel.invokeMethod<bool>(
-          'requestReadPermissions',
-          metricTypes,
+          'requestAllReadPermissions',
         ) ??
         false;
   }

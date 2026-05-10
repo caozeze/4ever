@@ -30,9 +30,7 @@ void main() {
     );
 
     expect(result['status'], HealthSummaryService.statusOk);
-    expect(gateway.requestedPermissions, <HealthMetricType>{
-      HealthMetricType.activeEnergy,
-    });
+    expect(gateway.requestedPermissions, isNull);
     expect(gateway.readMetricTypes, <HealthMetricType>{
       HealthMetricType.activeEnergy,
     });
@@ -54,29 +52,6 @@ void main() {
     expect(finishEvent.sampleCount, 2);
   });
 
-  test('returns permission_denied without reading samples', () async {
-    final gateway = FakeHealthDataGateway()..permissionGranted = false;
-    final traceSink = RecordingAgentTraceSink();
-    final service = HealthSummaryService(
-      gateway: gateway,
-      traceSink: traceSink,
-    );
-
-    final result = await service.getHealthSummary(
-      period: 'today',
-      metrics: <String>['activeEnergy'],
-      now: DateTime(2026, 5, 10, 15, 30),
-    );
-
-    expect(result['status'], HealthSummaryService.statusPermissionDenied);
-    expect(result['reason'], HealthSummaryService.reasonPermissionDenied);
-    expect(gateway.readMetricTypes, isNull);
-    expect(
-      traceSink.events.last.status,
-      HealthSummaryService.statusPermissionDenied,
-    );
-  });
-
   test('returns no_data when HealthKit has no requested aggregate', () async {
     final traceSink = RecordingAgentTraceSink();
     final service = HealthSummaryService(
@@ -91,7 +66,11 @@ void main() {
     );
 
     expect(result['status'], HealthSummaryService.statusNoData);
-    expect(result['reason'], HealthSummaryService.reasonPermissionOrNoData);
+    expect(
+      result['reason'],
+      HealthSummaryService.reasonPermissionOrNoVisibleData,
+    );
+    expect(result['requested_metrics'], <String>['activeEnergy']);
     expect(result['metrics'], isEmpty);
     expect(traceSink.events.last.status, HealthSummaryService.statusNoData);
   });
