@@ -24,8 +24,6 @@ final class HealthKitHostApiAdapter: NSObject {
       openAppSettings(result: result)
     case "readAggregates":
       readAggregates(call.arguments, result: result)
-    case "readSamples":
-      readSamples(call.arguments, result: result)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -73,91 +71,6 @@ final class HealthKitHostApiAdapter: NSObject {
       UIApplication.shared.open(url, options: [:]) { opened in
         result(opened)
       }
-    }
-  }
-
-  private func readSamples(_ arguments: Any?, result: @escaping FlutterResult) {
-    guard HKHealthStore.isHealthDataAvailable() else {
-      result(nativeFlutterError(.modelUnsupportedDevice, message: "HealthKit is not available on this device."))
-      return
-    }
-    guard let payload = arguments as? [String: Any],
-          let metricTypes = payload["metric_types"] as? [String],
-          let startMillis = millisValue(payload["start_time_millis"]),
-          let endMillis = millisValue(payload["end_time_millis"]) else {
-      result(nativeFlutterError(.unknown, message: "Invalid HealthKit sample request."))
-      return
-    }
-
-    let unsupported = metricTypes.filter { healthKitType(for: $0) == nil }
-    guard unsupported.isEmpty else {
-      result(nativeFlutterError(.unknown, message: "Unsupported Apple Health metrics: \(unsupported.joined(separator: ", "))"))
-      return
-    }
-    guard endMillis > startMillis else {
-      result(nativeFlutterError(.unknown, message: "End time must be after start time."))
-      return
-    }
-
-    let startDate = Date(timeIntervalSince1970: TimeInterval(startMillis) / 1000.0)
-    let endDate = Date(timeIntervalSince1970: TimeInterval(endMillis) / 1000.0)
-    NSLog("[AgentTrace] event=health_samples_read_start metric_names=%@", metricTypes.joined(separator: ","))
-    let predicate = HKQuery.predicateForSamples(
-      withStart: startDate,
-      end: endDate,
-      options: []
-    )
-    let sortDescriptors = [
-      NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
-    ]
-    let group = DispatchGroup()
-    let lock = NSLock()
-    var output = [[String: Any]]()
-    var firstError: FlutterError?
-
-    for metricType in Set(metricTypes) {
-      guard let sampleType = healthKitType(for: metricType) as? HKSampleType else {
-        continue
-      }
-      group.enter()
-      let query = HKSampleQuery(
-        sampleType: sampleType,
-        predicate: predicate,
-        limit: HKObjectQueryNoLimit,
-        sortDescriptors: sortDescriptors
-      ) { [weak self] _, samples, error in
-        defer { group.leave() }
-        if let error {
-          lock.lock()
-          if firstError == nil {
-            firstError = nativeFlutterError(.modelRuntimeInternal, message: error.localizedDescription)
-          }
-          lock.unlock()
-          return
-        }
-        let mapped = (samples ?? []).compactMap { sample in
-          self?.mapSample(sample, metricType: metricType)
-        }
-        lock.lock()
-        output.append(contentsOf: mapped)
-        lock.unlock()
-      }
-      healthStore.execute(query)
-    }
-
-    group.notify(queue: .main) {
-      if let firstError {
-        NSLog("[AgentTrace] event=health_samples_read_finish status=read_failed metric_names=%@", metricTypes.joined(separator: ","))
-        result(firstError)
-        return
-      }
-      let sorted = output.sorted {
-        let left = $0["start_time_millis"] as? Int64 ?? 0
-        let right = $1["start_time_millis"] as? Int64 ?? 0
-        return left < right
-      }
-      NSLog("[AgentTrace] event=health_samples_read_finish status=ok metric_names=%@ sample_count=%d", metricTypes.joined(separator: ","), sorted.count)
-      result(sorted)
     }
   }
 
@@ -507,87 +420,4 @@ final class HealthKitHostApiAdapter: NSObject {
     return nil
   }
 
-  private func mapSample(_ sample: HKSample, metricType: String) -> [String: Any]? {
-    if let sample = sample as? HKQuantitySample {
-      return mapQuantitySample(sample, metricType: metricType)
-    }
-    if let sample = sample as? HKCategorySample {
-      return mapCategorySample(sample, metricType: metricType)
-    }
-    return nil
-  }
-
-  private func mapQuantitySample(_ sample: HKQuantitySample, metricType: String) -> [String: Any]? {
-    guard let unit = quantityUnit(for: metricType) else {
-      return nil
-    }
-    let value = sample.quantity.doubleValue(for: unit)
-    return baseSampleMap(
-      sample,
-      metricType: metricType,
-      numericValue: value,
-      unit: unitName(for: metricType)
-    )
-  }
-
-  private func mapCategorySample(_ sample: HKCategorySample, metricType: String) -> [String: Any]? {
-    let durationSeconds = sample.endDate.timeIntervalSince(sample.startDate)
-    guard metricType == "sleepSession" else {
-      return nil
-    }
-    return baseSampleMap(
-      sample,
-      metricType: metricType,
-      numericValue: durationSeconds / 3600.0,
-      unit: "hour"
-    )
-  }
-
-  private func baseSampleMap(
-    _ sample: HKSample,
-    metricType: String,
-    numericValue: Double?,
-    unit: String
-  ) -> [String: Any] {
-    var payload: [String: Any] = [
-      "type": metricType,
-      "unit": unit,
-      "start_time_millis": Int64(sample.startDate.timeIntervalSince1970 * 1000),
-      "end_time_millis": Int64(sample.endDate.timeIntervalSince1970 * 1000)
-    ]
-    if let numericValue {
-      payload["numeric_value"] = numericValue
-    }
-    return payload
-  }
-
-  private func quantityUnit(for metricType: String) -> HKUnit? {
-    switch metricType {
-    case "steps":
-      return .count()
-    case "heartRate":
-      return HKUnit.count().unitDivided(by: .minute())
-    case "hrv":
-      return HKUnit.secondUnit(with: .milli)
-    case "activeEnergy":
-      return .kilocalorie()
-    default:
-      return nil
-    }
-  }
-
-  private func unitName(for metricType: String) -> String {
-    switch metricType {
-    case "steps":
-      return "count"
-    case "heartRate":
-      return "bpm"
-    case "hrv":
-      return "ms"
-    case "activeEnergy":
-      return "kcal"
-    default:
-      return ""
-    }
-  }
 }

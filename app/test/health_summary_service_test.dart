@@ -9,18 +9,12 @@ import 'health/health_test_fakes.dart';
 void main() {
   test('summarizes active energy for today in kcal', () async {
     final gateway = FakeHealthDataGateway()
-      ..samples = <HealthDataSample>[
-        healthSample(
+      ..aggregates = const <HealthDataAggregate>[
+        HealthDataAggregate(
           type: HealthMetricType.activeEnergy,
-          numericValue: 120.2,
           unit: 'kcal',
-          start: DateTime(2026, 5, 10, 9),
-        ),
-        healthSample(
-          type: HealthMetricType.activeEnergy,
-          numericValue: 200.3,
-          unit: 'kcal',
-          start: DateTime(2026, 5, 10, 12),
+          sampleCount: 2,
+          value: 320.5,
         ),
       ];
     final traceSink = RecordingAgentTraceSink();

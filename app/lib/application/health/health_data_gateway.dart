@@ -1,23 +1,5 @@
 import '../../domain/health/health_metric_type.dart';
 
-final class HealthDataSample {
-  const HealthDataSample({
-    required this.type,
-    required this.unit,
-    required this.startTime,
-    required this.endTime,
-    this.numericValue,
-    this.textValue,
-  });
-
-  final HealthMetricType type;
-  final double? numericValue;
-  final String? textValue;
-  final String unit;
-  final DateTime startTime;
-  final DateTime endTime;
-}
-
 final class HealthDataAggregate {
   const HealthDataAggregate({
     required this.type,
@@ -50,12 +32,6 @@ abstract interface class HealthDataGateway {
     required DateTime start,
     required DateTime end,
   });
-
-  Future<List<HealthDataSample>> readSamples({
-    required Set<HealthMetricType> metricTypes,
-    required DateTime start,
-    required DateTime end,
-  });
 }
 
 final class UnavailableHealthDataGateway implements HealthDataGateway {
@@ -78,15 +54,6 @@ final class UnavailableHealthDataGateway implements HealthDataGateway {
 
   @override
   Future<List<HealthDataAggregate>> readAggregates({
-    required Set<HealthMetricType> metricTypes,
-    required DateTime start,
-    required DateTime end,
-  }) async {
-    throw UnsupportedError(message);
-  }
-
-  @override
-  Future<List<HealthDataSample>> readSamples({
     required Set<HealthMetricType> metricTypes,
     required DateTime start,
     required DateTime end,

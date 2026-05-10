@@ -25,24 +25,6 @@ class IosHealthDataApi {
     return await _methodChannel.invokeMethod<bool>('openAppSettings') ?? false;
   }
 
-  Future<List<Map<String, Object?>>> readSamples({
-    required List<String> metricTypes,
-    required DateTime startTime,
-    required DateTime endTime,
-  }) async {
-    final result = await _methodChannel
-        .invokeListMethod<Object?>('readSamples', <String, Object?>{
-          'metric_types': metricTypes,
-          'start_time_millis': startTime.millisecondsSinceEpoch,
-          'end_time_millis': endTime.millisecondsSinceEpoch,
-        });
-
-    return (result ?? <Object?>[])
-        .cast<Map<Object?, Object?>>()
-        .map((Map<Object?, Object?> item) => Map<String, Object?>.from(item))
-        .toList(growable: false);
-  }
-
   Future<List<Map<String, Object?>>> readAggregates({
     required List<String> metricTypes,
     required DateTime startTime,

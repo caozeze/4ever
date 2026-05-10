@@ -16,18 +16,12 @@ void main() {
       final runtime = RecordingLlmRuntime()
         ..responseTexts.addAll(<String>['You burned 320.5 kcal today.']);
       final gateway = FakeHealthDataGateway()
-        ..samples = <HealthDataSample>[
-          healthSample(
+        ..aggregates = const <HealthDataAggregate>[
+          HealthDataAggregate(
             type: HealthMetricType.activeEnergy,
-            numericValue: 120.2,
             unit: 'kcal',
-            start: DateTime(2026, 5, 10, 9),
-          ),
-          healthSample(
-            type: HealthMetricType.activeEnergy,
-            numericValue: 200.3,
-            unit: 'kcal',
-            start: DateTime(2026, 5, 10, 12),
+            sampleCount: 2,
+            value: 320.5,
           ),
         ];
       final traceSink = RecordingAgentTraceSink();
@@ -113,12 +107,12 @@ void main() {
     final runtime = RecordingLlmRuntime()
       ..responseTexts.addAll(<String>['You walked 1234 steps today.']);
     final gateway = FakeHealthDataGateway()
-      ..samples = <HealthDataSample>[
-        healthSample(
+      ..aggregates = const <HealthDataAggregate>[
+        HealthDataAggregate(
           type: HealthMetricType.steps,
-          numericValue: 1234,
           unit: 'count',
-          start: DateTime(2026, 5, 10, 9),
+          sampleCount: 1,
+          value: 1234,
         ),
       ];
     final traceSink = RecordingAgentTraceSink();

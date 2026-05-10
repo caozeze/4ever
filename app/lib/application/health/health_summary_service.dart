@@ -176,25 +176,23 @@ final class HealthSummaryService {
         'unit': aggregate.unit,
         'sample_count': aggregate.sampleCount,
       },
-      HealthMetricType.heartRate => <String, Object?>{
-        if (aggregate.average != null) 'average': _roundOne(aggregate.average!),
-        if (aggregate.min != null) 'min': _roundOne(aggregate.min!),
-        if (aggregate.max != null) 'max': _roundOne(aggregate.max!),
-        'unit': aggregate.unit,
-        'sample_count': aggregate.sampleCount,
-      },
-      HealthMetricType.hrv => <String, Object?>{
-        if (aggregate.average != null) 'average': _roundOne(aggregate.average!),
-        if (aggregate.min != null) 'min': _roundOne(aggregate.min!),
-        if (aggregate.max != null) 'max': _roundOne(aggregate.max!),
-        'unit': aggregate.unit,
-        'sample_count': aggregate.sampleCount,
-      },
+      HealthMetricType.heartRate ||
+      HealthMetricType.hrv => _averageJson(aggregate),
       HealthMetricType.activeEnergy => <String, Object?>{
         if (aggregate.value != null) 'value': _roundOne(aggregate.value!),
         'unit': aggregate.unit,
         'sample_count': aggregate.sampleCount,
       },
+    };
+  }
+
+  Map<String, Object?> _averageJson(HealthDataAggregate aggregate) {
+    return <String, Object?>{
+      if (aggregate.average != null) 'average': _roundOne(aggregate.average!),
+      if (aggregate.min != null) 'min': _roundOne(aggregate.min!),
+      if (aggregate.max != null) 'max': _roundOne(aggregate.max!),
+      'unit': aggregate.unit,
+      'sample_count': aggregate.sampleCount,
     };
   }
 
