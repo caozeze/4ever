@@ -5,6 +5,8 @@ import '../../../domain/ai/model_install_progress.dart';
 import '../../../domain/ai/model_install_record.dart';
 import '../../../domain/ai/model_install_status.dart';
 import '../../../domain/ai/model_manifest_entry.dart';
+import '../../observability/agent_trace_sink.dart';
+import 'demo_model_identity.dart';
 import 'device_capabilities_reader.dart';
 import 'model_artifact_preparer.dart';
 import 'model_catalog.dart';
@@ -21,13 +23,15 @@ class ModelLifecycleService {
     required ModelArtifactPreparer artifactPreparer,
     required ModelRegistryStore registryStore,
     required LlmRuntime runtime,
+    AgentTraceSink traceSink = const NoopAgentTraceSink(),
   }) : _catalog = catalog,
        _deviceCapabilitiesReader = deviceCapabilitiesReader,
        _selectionService = selectionService,
        _storagePaths = storagePaths,
        _artifactPreparer = artifactPreparer,
        _registryStore = registryStore,
-       _runtime = runtime;
+       _runtime = runtime,
+       _traceSink = traceSink;
 
   final ModelCatalog _catalog;
   final DeviceCapabilitiesReader _deviceCapabilitiesReader;
@@ -36,8 +40,9 @@ class ModelLifecycleService {
   final ModelArtifactPreparer _artifactPreparer;
   final ModelRegistryStore _registryStore;
   final LlmRuntime _runtime;
+  final AgentTraceSink _traceSink;
 
-  Stream<ModelInstallProgress> prepareDemoModel({
+  Stream<ModelInstallProgress> ensureDemoModelReady({
     String? preferredModelId,
     bool requiresWiFi = true,
   }) async* {
@@ -46,10 +51,10 @@ class ModelLifecycleService {
     final model = _selectionService.select(
       manifest: manifest,
       capabilities: capabilities,
-      preferredModelId: preferredModelId,
+      preferredModelId: DemoModelIdentity.modelId,
     );
 
-    yield* installAndLoad(
+    yield* ensureLocalGemma(
       model: model,
       capabilities: capabilities,
       requiresWiFi: requiresWiFi,
@@ -57,6 +62,18 @@ class ModelLifecycleService {
   }
 
   Stream<ModelInstallProgress> installAndLoad({
+    required ModelManifestEntry model,
+    required DeviceCapabilities capabilities,
+    bool requiresWiFi = true,
+  }) {
+    return ensureLocalGemma(
+      model: model,
+      capabilities: capabilities,
+      requiresWiFi: requiresWiFi,
+    );
+  }
+
+  Stream<ModelInstallProgress> ensureLocalGemma({
     required ModelManifestEntry model,
     required DeviceCapabilities capabilities,
     bool requiresWiFi = true,
@@ -88,6 +105,32 @@ class ModelLifecycleService {
       return;
     }
 
+    _trace('model_artifact_check_start', modelId: model.id, status: 'checking');
+    yield ModelInstallProgress(
+      modelId: model.id,
+      status: ModelInstallStatus.notInstalled,
+      message: 'Checking local Gemma...',
+    );
+    final readiness = await _artifactPreparer.readiness(
+      model: model,
+      targetPath: targetPath,
+    );
+    _trace(
+      readiness.isReady ? 'model_artifact_found' : 'model_artifact_missing',
+      modelId: model.id,
+      status: readiness.isReady ? 'ready' : 'missing',
+    );
+    if (!readiness.isReady) {
+      yield* _markFailed(
+        record: record,
+        model: model,
+        reason: ModelFailureReason.modelNotFound,
+        message:
+            readiness.message ?? 'Local Gemma model is missing at $targetPath.',
+      );
+      return;
+    }
+
     final runtimeStatus = await _runtime.getStatus();
     if (runtimeStatus.state == 'ready' &&
         runtimeStatus.loadedModelId == model.id) {
@@ -96,93 +139,13 @@ class ModelLifecycleService {
         updatedAt: DateTime.now().toUtc(),
       );
       await _registryStore.upsert(ready);
+      _trace('model_connection_ready', modelId: model.id, status: 'ready');
       yield ModelInstallProgress(
         modelId: model.id,
         status: ModelInstallStatus.ready,
         progress: 1,
       );
       return;
-    }
-
-    final readiness = await _artifactPreparer.readiness(
-      model: model,
-      targetPath: targetPath,
-    );
-    if (!readiness.isReady) {
-      if (capabilities.freeDiskBytes < model.minFreeDiskBytes) {
-        yield _failed(model, ModelFailureReason.insufficientDisk);
-        return;
-      }
-
-      record = record.copyWith(
-        status: ModelInstallStatus.downloading,
-        updatedAt: DateTime.now().toUtc(),
-      );
-      await _registryStore.upsert(record);
-      yield ModelInstallProgress(
-        modelId: model.id,
-        status: ModelInstallStatus.downloading,
-        progress: 0,
-        message: readiness.message,
-      );
-
-      try {
-        await _artifactPreparer.prepare(
-          model: model,
-          targetPath: targetPath,
-          requiresWiFi: requiresWiFi,
-        );
-      } on Object catch (error) {
-        final reason = _failureReasonForArtifactMessage(error.toString());
-        final failed = record.copyWith(
-          status: ModelInstallStatus.failed,
-          updatedAt: DateTime.now().toUtc(),
-          failureReason: reason,
-          errorMessage: error.toString(),
-        );
-        await _registryStore.upsert(failed);
-        yield ModelInstallProgress(
-          modelId: model.id,
-          status: ModelInstallStatus.failed,
-          failureReason: reason,
-          message: error.toString(),
-        );
-        return;
-      }
-
-      record = record.copyWith(
-        status: ModelInstallStatus.verifying,
-        updatedAt: DateTime.now().toUtc(),
-      );
-      await _registryStore.upsert(record);
-      yield ModelInstallProgress(
-        modelId: model.id,
-        status: ModelInstallStatus.verifying,
-      );
-
-      final preparedReadiness = await _artifactPreparer.readiness(
-        model: model,
-        targetPath: targetPath,
-      );
-      if (!preparedReadiness.isReady) {
-        final reason = _failureReasonForArtifactMessage(
-          preparedReadiness.message,
-        );
-        final failed = record.copyWith(
-          status: ModelInstallStatus.failed,
-          updatedAt: DateTime.now().toUtc(),
-          failureReason: reason,
-          errorMessage: preparedReadiness.message,
-        );
-        await _registryStore.upsert(failed);
-        yield ModelInstallProgress(
-          modelId: model.id,
-          status: ModelInstallStatus.failed,
-          failureReason: reason,
-          message: preparedReadiness.message,
-        );
-        return;
-      }
     }
 
     record = record.copyWith(
@@ -208,20 +171,33 @@ class ModelLifecycleService {
     );
 
     try {
+      _trace('model_initialize_start', modelId: model.id, status: 'loading');
       await _runtime.initialize(model.toLlmModelConfig(targetPath));
     } on Object catch (error) {
-      final failed = record.copyWith(
-        status: ModelInstallStatus.failed,
-        updatedAt: DateTime.now().toUtc(),
-        failureReason: ModelFailureReason.runtimeFailed,
-        errorMessage: error.toString(),
-      );
-      await _registryStore.upsert(failed);
-      yield ModelInstallProgress(
+      _trace(
+        'model_initialize_failed',
         modelId: model.id,
-        status: ModelInstallStatus.failed,
-        failureReason: ModelFailureReason.runtimeFailed,
+        status: 'failed',
+        errorCode: ModelFailureReason.runtimeFailed.name,
+      );
+      yield* _markFailed(
+        record: record,
+        model: model,
+        reason: ModelFailureReason.runtimeFailed,
         message: error.toString(),
+      );
+      return;
+    }
+    _trace('model_initialize_ready', modelId: model.id, status: 'ready');
+
+    final loadedStatus = await _runtime.getStatus();
+    if (loadedStatus.state != 'ready' ||
+        loadedStatus.loadedModelId != model.id) {
+      yield* _markFailed(
+        record: record,
+        model: model,
+        reason: ModelFailureReason.runtimeFailed,
+        message: 'Local Gemma initialized but runtime status is not ready.',
       );
       return;
     }
@@ -237,6 +213,7 @@ class ModelLifecycleService {
       status: ModelInstallStatus.ready,
       progress: 1,
     );
+    _trace('model_connection_ready', modelId: model.id, status: 'ready');
   }
 
   ModelInstallProgress _failed(
@@ -250,11 +227,41 @@ class ModelLifecycleService {
     );
   }
 
-  ModelFailureReason _failureReasonForArtifactMessage(String? message) {
-    final normalized = message?.toLowerCase() ?? '';
-    if (normalized.contains('hash') || normalized.contains('sha-256')) {
-      return ModelFailureReason.hashMismatch;
-    }
-    return ModelFailureReason.downloadFailed;
+  Stream<ModelInstallProgress> _markFailed({
+    required ModelInstallRecord record,
+    required ModelManifestEntry model,
+    required ModelFailureReason reason,
+    required String message,
+  }) async* {
+    final failed = record.copyWith(
+      status: ModelInstallStatus.failed,
+      updatedAt: DateTime.now().toUtc(),
+      failureReason: reason,
+      errorMessage: message,
+    );
+    await _registryStore.upsert(failed);
+    yield ModelInstallProgress(
+      modelId: model.id,
+      status: ModelInstallStatus.failed,
+      failureReason: reason,
+      message: message,
+    );
+  }
+
+  void _trace(
+    String event, {
+    required String modelId,
+    String? status,
+    String? errorCode,
+  }) {
+    _traceSink.record(
+      AgentTraceEvent(
+        event: event,
+        modelId: modelId,
+        status: status,
+        errorCode: errorCode,
+        phase: 'model_lifecycle',
+      ),
+    );
   }
 }

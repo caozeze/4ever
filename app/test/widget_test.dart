@@ -8,7 +8,7 @@ import 'package:gemma_local/application/ai/demo_chat_controller.dart';
 import 'package:gemma_local/application/ai/model/device_capabilities_reader.dart';
 import 'package:gemma_local/application/ai/model/model_artifact_preparer.dart';
 import 'package:gemma_local/application/ai/model/model_catalog.dart';
-import 'package:gemma_local/application/ai/model/model_file_downloader.dart';
+import 'package:gemma_local/application/ai/model/model_connection_controller.dart';
 import 'package:gemma_local/application/ai/model/model_lifecycle_service.dart';
 import 'package:gemma_local/application/ai/model/model_registry_store.dart';
 import 'package:gemma_local/application/ai/model/model_selection_service.dart';
@@ -56,14 +56,54 @@ void main() {
   testWidgets('keeps ask disabled before model is ready', (
     WidgetTester tester,
   ) async {
-    final preparer = _FakeArtifactPreparer(completeImmediately: false);
-    await _pumpTestApp(tester, artifactPreparer: preparer, settle: false);
+    final preparer = _FakeArtifactPreparer(isReady: false);
+    await _pumpTestApp(tester, artifactPreparer: preparer);
 
     final button = tester.widget<FilledButton>(
       find.byKey(const ValueKey<String>('gemma_ask_button')),
     );
     expect(button.onPressed, isNull);
-    expect(find.text('Preparing local Gemma 4...'), findsOneWidget);
+    expect(find.textContaining('Local Gemma model is missing'), findsOneWidget);
+  });
+
+  testWidgets('retry button reconnects after model connection timeout', (
+    WidgetTester tester,
+  ) async {
+    var loadCalls = 0;
+    final modelConnectionController = ModelConnectionController(
+      loadController: () {
+        loadCalls += 1;
+        if (loadCalls == 1) {
+          return Completer<DemoChatController>().future;
+        }
+        return Future<DemoChatController>.value(_testDemoChatController());
+      },
+      connectionTimeout: const Duration(milliseconds: 1),
+    );
+
+    await _pumpTestApp(
+      tester,
+      modelConnectionController: modelConnectionController,
+      settle: false,
+    );
+    await tester.pump(const Duration(milliseconds: 10));
+    await tester.pump();
+
+    expect(find.textContaining('timed out'), findsOneWidget);
+    expect(find.byKey(const ValueKey<String>('gemma_retry_button')), findsOne);
+
+    await tester.tap(find.byKey(const ValueKey<String>('gemma_retry_button')));
+    await tester.pumpAndSettle();
+
+    expect(loadCalls, 2);
+    expect(
+      find.byKey(const ValueKey<String>('gemma_retry_button')),
+      findsNothing,
+    );
+    final button = tester.widget<FilledButton>(
+      find.byKey(const ValueKey<String>('gemma_ask_button')),
+    );
+    expect(button.onPressed, isNotNull);
   });
 
   testWidgets('opens left menu and navigates to feature placeholders', (
@@ -136,6 +176,7 @@ Future<void> _pumpTestApp(
   WidgetTester tester, {
   _FakeArtifactPreparer? artifactPreparer,
   _FakeHealthAuthorizationService? healthAuthorizationService,
+  ModelConnectionController? modelConnectionController,
   bool settle = true,
 }) async {
   await tester.binding.setSurfaceSize(const Size(800, 1000));
@@ -144,6 +185,7 @@ Future<void> _pumpTestApp(
     _testApp(
       artifactPreparer: artifactPreparer,
       healthAuthorizationService: healthAuthorizationService,
+      modelConnectionController: modelConnectionController,
     ),
   );
   if (settle) {
@@ -157,6 +199,7 @@ Future<void> _pumpTestApp(
 Widget _testApp({
   _FakeArtifactPreparer? artifactPreparer,
   _FakeHealthAuthorizationService? healthAuthorizationService,
+  ModelConnectionController? modelConnectionController,
 }) {
   return ProviderScope(
     overrides: [
@@ -166,6 +209,10 @@ Widget _testApp({
       if (healthAuthorizationService != null)
         healthAuthorizationServiceProvider.overrideWithValue(
           healthAuthorizationService,
+        ),
+      if (modelConnectionController != null)
+        modelConnectionControllerProvider.overrideWith(
+          (Ref ref) => modelConnectionController,
         ),
     ],
     child: const GemmaLocalApp(),
@@ -235,35 +282,21 @@ class _FakeStoragePaths implements ModelStoragePaths {
 }
 
 class _FakeArtifactPreparer implements ModelArtifactPreparer {
-  _FakeArtifactPreparer({this.completeImmediately = true});
+  _FakeArtifactPreparer({this.isReady = true});
 
-  final bool completeImmediately;
-  final Completer<void> _prepareCompleter = Completer<void>();
-  var isPrepared = false;
-
-  @override
-  Future<void> prepare({
-    required ModelManifestEntry model,
-    required String targetPath,
-    required bool requiresWiFi,
-    ModelDownloadProgressCallback? onProgress,
-  }) async {
-    onProgress?.call(1);
-    if (!completeImmediately) {
-      await _prepareCompleter.future;
-    }
-    isPrepared = true;
-  }
+  final bool isReady;
 
   @override
   Future<ModelArtifactReadiness> readiness({
     required ModelManifestEntry model,
     required String targetPath,
   }) async {
-    if (isPrepared) {
+    if (isReady) {
       return const ModelArtifactReadiness.ready();
     }
-    return const ModelArtifactReadiness.missing('missing test bundle');
+    return ModelArtifactReadiness.missing(
+      'Local Gemma model is missing at $targetPath.',
+    );
   }
 }
 

@@ -77,6 +77,7 @@ final class HealthKitHostApiAdapter: NSObject {
       result(nativeFlutterError(.unknown, message: "Invalid HealthKit aggregate request."))
       return
     }
+    let readMode = payload["read_mode"] as? String ?? "aggregate"
 
     let descriptors = metricNames.uniqueSorted().compactMap(SummaryDescriptor.forMetric)
     guard descriptors.count == Set(metricNames).count else {
@@ -96,7 +97,7 @@ final class HealthKitHostApiAdapter: NSObject {
     var output = [[String: Any]]()
     for descriptor in descriptors {
       group.enter()
-      readAggregate(descriptor, predicate: predicate, startDate: startDate, endDate: endDate) { aggregate, error in
+      let completion: ([String: Any]?, FlutterError?) -> Void = { aggregate, error in
         defer { group.leave() }
         lock.lock()
         defer { lock.unlock() }
@@ -110,6 +111,11 @@ final class HealthKitHostApiAdapter: NSObject {
         } else {
           NSLog("[AgentTrace] event=health_aggregate_read_finish metric_names=%@ status=no_data reason=permission_or_no_visible_data sample_count=0 window_days=%d", descriptor.metric, windowDays)
         }
+      }
+      if readMode == "latest" {
+        readLatestAggregate(descriptor, predicate: predicate, startDate: startDate, endDate: endDate, completion: completion)
+      } else {
+        readAggregate(descriptor, predicate: predicate, startDate: startDate, endDate: endDate, completion: completion)
       }
     }
     group.notify(queue: .main) { result(output) }
@@ -133,6 +139,21 @@ final class HealthKitHostApiAdapter: NSObject {
       readSleep(descriptor, predicate: predicate, startDate: startDate, endDate: endDate, completion: completion)
     case .workout:
       readWorkout(descriptor, predicate: predicate, startDate: startDate, endDate: endDate, completion: completion)
+    }
+  }
+
+  private func readLatestAggregate(
+    _ descriptor: SummaryDescriptor,
+    predicate: NSPredicate,
+    startDate: Date,
+    endDate: Date,
+    completion: @escaping ([String: Any]?, FlutterError?) -> Void
+  ) {
+    switch descriptor.kind {
+    case .quantity, .latestQuantity:
+      readLatestQuantity(descriptor, endDate: endDate, completion: completion)
+    case .categoryDuration, .sleep, .workout:
+      completion(nil, nativeFlutterError(.unknown, message: "Latest mode is unsupported for Apple Health metric: \(descriptor.metric)"))
     }
   }
 
@@ -192,7 +213,13 @@ final class HealthKitHostApiAdapter: NSObject {
         completion(nil, nil)
         return
       }
-      self.finishValue(descriptor, value: sample.quantity.doubleValue(for: descriptor.unit), sampleCount: 1, completion: completion)
+      self.finishValue(
+        descriptor,
+        value: sample.quantity.doubleValue(for: descriptor.unit),
+        sampleCount: 1,
+        sampleEndDate: sample.endDate,
+        completion: completion
+      )
     }
     healthStore.execute(query)
   }
@@ -275,6 +302,7 @@ final class HealthKitHostApiAdapter: NSObject {
     _ descriptor: SummaryDescriptor,
     value: Double,
     sampleCount: Int,
+    sampleEndDate: Date? = nil,
     completion: @escaping ([String: Any]?, FlutterError?) -> Void
   ) {
     guard sampleCount > 0, value > 0 else {
@@ -283,6 +311,9 @@ final class HealthKitHostApiAdapter: NSObject {
     }
     var payload = basePayload(descriptor, sampleCount: sampleCount)
     payload["value"] = value
+    if let sampleEndDate {
+      payload["sample_end_time_millis"] = Int64(sampleEndDate.timeIntervalSince1970 * 1000.0)
+    }
     completion(payload, nil)
   }
 

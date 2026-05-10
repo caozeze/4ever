@@ -3,7 +3,6 @@ import 'package:gemma_local/application/ai/local_health_agent_service.dart';
 import 'package:gemma_local/application/ai/model/device_capabilities_reader.dart';
 import 'package:gemma_local/application/ai/model/model_artifact_preparer.dart';
 import 'package:gemma_local/application/ai/model/model_catalog.dart';
-import 'package:gemma_local/application/ai/model/model_file_downloader.dart';
 import 'package:gemma_local/application/ai/model/model_lifecycle_service.dart';
 import 'package:gemma_local/application/ai/model/model_registry_store.dart';
 import 'package:gemma_local/application/ai/model/model_selection_service.dart';
@@ -62,10 +61,7 @@ final class RecordingLlmRuntime implements LlmRuntime {
     final text = responseTexts.isEmpty
         ? responseText
         : responseTexts.removeAt(0);
-    return LlmResponse(
-      text: text,
-      modelId: initializedModelId ?? 'unloaded',
-    );
+    return LlmResponse(text: text, modelId: initializedModelId ?? 'unloaded');
   }
 
   @override
@@ -169,16 +165,6 @@ class _FakeStoragePaths implements ModelStoragePaths {
 }
 
 class _RecordingArtifactPreparer implements ModelArtifactPreparer {
-  @override
-  Future<void> prepare({
-    required ModelManifestEntry model,
-    required String targetPath,
-    required bool requiresWiFi,
-    ModelDownloadProgressCallback? onProgress,
-  }) async {
-    onProgress?.call(1);
-  }
-
   @override
   Future<ModelArtifactReadiness> readiness({
     required ModelManifestEntry model,

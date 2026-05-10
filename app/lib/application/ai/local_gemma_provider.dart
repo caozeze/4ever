@@ -120,7 +120,15 @@ final class LocalGemmaChatModel extends ChatModel<ChatModelOptions> {
 
   String _renderPrompt(List<ChatMessage> messages) {
     final buffer = StringBuffer()
-      ..writeln('You are running as a local Gemma model inside this app.')
+      ..writeln(
+        'You are a privacy-first personal health assistant running as a local Gemma model inside this app.',
+      )
+      ..writeln(
+        'You are not a doctor; do not diagnose, prescribe medication, or provide medical treatment.',
+      )
+      ..writeln(
+        'For health facts, use only the user request and local Apple Health tool results.',
+      )
       ..writeln('You may call tools only by outputting exactly one tag:')
       ..writeln(
         '<tool_call>{"tool":"get_health_summary","arguments":{"period":"today","metrics":["activeEnergy"]}}</tool_call>',
@@ -144,7 +152,9 @@ final class LocalGemmaChatModel extends ChatModel<ChatModelOptions> {
 
     buffer
       ..writeln()
-      ..writeln('If a tool result is available, answer from that result.')
+      ..writeln(
+        'If a tool result is available, answer from that result and do not invent health values.',
+      )
       ..writeln('Assistant:');
     return buffer.toString().trim();
   }

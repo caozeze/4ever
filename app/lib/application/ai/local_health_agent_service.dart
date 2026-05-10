@@ -7,6 +7,7 @@ import '../../domain/ai/llm_runtime.dart';
 import '../../domain/health/health_metric_type.dart';
 import '../health/health_summary_service.dart';
 import '../observability/agent_trace_sink.dart';
+import 'health_agent_planner.dart';
 import 'local_gemma_provider.dart';
 
 abstract interface class LocalHealthAgentService {
@@ -23,28 +24,33 @@ final class DartanticLocalHealthAgentService
   const DartanticLocalHealthAgentService({
     required LlmRuntime runtime,
     required HealthSummaryService healthSummaryService,
+    HealthAgentPlanner planner = const HealthAgentPlanner(),
     AgentTraceSink traceSink = const NoopAgentTraceSink(),
   }) : _runtime = runtime,
        _healthSummaryService = healthSummaryService,
+       _planner = planner,
        _traceSink = traceSink;
 
   static const String healthSummaryToolName = 'get_health_summary';
 
   static const String systemPrompt = '''
+You are a privacy-first personal health assistant running locally on this device.
 You are a local wellbeing assistant, not a doctor.
-Use tools when the user asks about current, today, or recent Apple Health facts.
+Use Apple Health tools when the user asks about current, today, recent, or latest health facts.
 If a tool result is available, answer from it.
 If a tool result has status ok and metrics are present, answer with those values.
 If a tool result has status permission_denied, no_data, unavailable, or invalid_request, explain that exact status clearly.
 If status is no_data with reason permission_or_no_visible_data, name the requested metric and say iOS returned no visible data; ask the user to check Health > Sharing > Apps > Gemma Local, enable that data type, and confirm Health contains data for the period.
 If HealthKit has no data or permission is missing, say that clearly.
 Do not claim you cannot access Apple Health when a tool result is present.
+Do not invent health values; only use the user request and local Apple Health tool results.
 Do not diagnose disease, prescribe medication, or provide medical treatment.
 Keep answers concise and user-facing.
 ''';
 
   final LlmRuntime _runtime;
   final HealthSummaryService _healthSummaryService;
+  final HealthAgentPlanner _planner;
   final AgentTraceSink _traceSink;
 
   @override
@@ -60,13 +66,19 @@ Keep answers concise and user-facing.
     _traceSink.record(
       const AgentTraceEvent(event: 'agent_start', phase: 'ask'),
     );
-    final routedRequest = _routeHealthSummaryRequest(prompt);
-    if (routedRequest != null) {
-      return _askWithHealthSummary(
-        userPrompt: prompt,
-        config: config,
-        request: routedRequest,
-      );
+    final plan = _planner.plan(prompt);
+    _traceSink.record(
+      AgentTraceEvent(
+        event: 'agent_plan',
+        metricNames: plan.requestedMetrics
+            .map((metric) => metric.wireName)
+            .toList(growable: false),
+        status: plan.answerMode.name,
+        phase: 'plan',
+      ),
+    );
+    if (plan.needsHealthData) {
+      return _askWithHealthPlan(userPrompt: prompt, config: config, plan: plan);
     }
     final agent = Agent.forProvider(
       LocalGemmaProvider(
@@ -88,17 +100,30 @@ Keep answers concise and user-facing.
     return result.output;
   }
 
-  Future<String> _askWithHealthSummary({
+  Future<String> _askWithHealthPlan({
     required String userPrompt,
     required LlmGenerationConfig config,
-    required _HealthSummaryRequest request,
+    required HealthAgentPlan plan,
   }) async {
-    final result = await _runHealthSummaryTool(
-      period: request.period,
-      metricNames: request.metrics,
-    );
+    final toolResults = <Map<String, Object?>>[];
+    for (final action in plan.actions) {
+      final result = await _runHealthSummaryTool(
+        period: action.period,
+        metricNames: action.metrics
+            .map((metric) => metric.wireName)
+            .toList(growable: false),
+      );
+      toolResults.add(<String, Object?>{
+        'action': action.toJson(),
+        'result': result,
+      });
+    }
     final response = await _runtime.generateOnce(
-      prompt: _finalAnswerPrompt(userPrompt: userPrompt, toolResult: result),
+      prompt: _finalAnswerPrompt(
+        userPrompt: userPrompt,
+        plan: plan,
+        toolResults: toolResults,
+      ),
       config: config,
     );
     _traceSink.record(
@@ -111,7 +136,7 @@ Keep answers concise and user-facing.
     return Tool<Map<String, dynamic>>(
       name: healthSummaryToolName,
       description:
-          'Read local Apple Health aggregate data after the user has authorized Apple Health once. Supports period today or last24h and metrics steps, sleepSession, workoutSession, activeEnergy, basalEnergy, exerciseTime, standTime, distanceWalkingRunning, flightsClimbed, heartRate, restingHeartRate, walkingHeartRateAverage, hrv, weight, mindfulMinutes.',
+          'Read local Apple Health aggregate data after the user has authorized Apple Health once. Supports period today, last24h, or latest and metrics steps, sleepSession, workoutSession, activeEnergy, basalEnergy, exerciseTime, standTime, distanceWalkingRunning, flightsClimbed, heartRate, restingHeartRate, walkingHeartRateAverage, hrv, weight, mindfulMinutes.',
       inputSchema: S.object(
         properties: <String, Schema>{
           'period': S.string(),
@@ -188,114 +213,34 @@ Keep answers concise and user-facing.
 
   String _finalAnswerPrompt({
     required String userPrompt,
-    required Map<String, Object?> toolResult,
+    required HealthAgentPlan plan,
+    required List<Map<String, Object?>> toolResults,
   }) {
+    final payload = <String, Object?>{
+      'user_request': userPrompt.trim(),
+      'agent_plan': plan.toJson(),
+      'tool_results': toolResults,
+      'answer_rules': <String>[
+        'Answer in Chinese unless the user clearly used another language.',
+        'Use only the Apple Health tool results and the user request for health facts.',
+        'If status is ok, quote the available metric values, units, and time window.',
+        'If period is latest, explain that the value is Apple Health latest visible sample, not real-time monitoring.',
+        'If missing_metrics is present, say those metrics returned no visible data and continue with available metrics.',
+        'If all results are no_data, permission_denied, unavailable, or invalid_request, explain the exact status and do not invent values.',
+        'For directMetricAnswer, answer the requested value first and avoid extra advice.',
+        'For overallAdvice, start with a short available-data overview, then give practical suggestions.',
+        'For advice requests, give 2-4 practical non-medical wellbeing suggestions based on available values.',
+        'Do not diagnose disease, prescribe medication, or provide medical treatment.',
+      ],
+    };
     return '''
 $systemPrompt
 
-User:
-${userPrompt.trim()}
+Structured local health agent input:
+${jsonEncode(payload)}
 
-Tool result from $healthSummaryToolName:
-${jsonEncode(toolResult)}
-
-Answer the user from the tool result. If status is ok and metrics are present, give the metric values directly. If status is no_data with reason permission_or_no_visible_data, name the requested metric and explain that iOS returned no visible data after the app requested access, so the user should check Health > Sharing > Apps > Gemma Local, enable that data type, and confirm Health contains data for the period. Do not say you cannot access Apple Health when status is ok.
 Assistant:
 ''';
-  }
-
-  _HealthSummaryRequest? _routeHealthSummaryRequest(String prompt) {
-    final text = prompt.trim().toLowerCase();
-    final metrics = <String>[];
-    if (_containsAny(text, const <String>['步', 'steps', 'walk'])) {
-      metrics.add(HealthMetricType.steps.wireName);
-    }
-    if (_containsAny(text, const <String>[
-      '卡路里',
-      '消耗',
-      'kcal',
-      'calorie',
-      'active energy',
-    ])) {
-      metrics.add(HealthMetricType.activeEnergy.wireName);
-    }
-    if (_containsAny(text, const <String>['心率', 'heart rate'])) {
-      metrics.add(HealthMetricType.heartRate.wireName);
-    }
-    if (_containsAny(text, const <String>['静息心率', 'resting heart'])) {
-      metrics
-        ..remove(HealthMetricType.heartRate.wireName)
-        ..add(HealthMetricType.restingHeartRate.wireName);
-    }
-    if (_containsAny(text, const <String>['hrv', '心率变异', '心率变异性'])) {
-      metrics.add(HealthMetricType.hrv.wireName);
-    }
-    if (_containsAny(text, const <String>['睡', 'sleep'])) {
-      metrics.add(HealthMetricType.sleepSession.wireName);
-    }
-    if (_containsAny(text, const <String>[
-      '运动',
-      '健身',
-      '锻炼',
-      'workout',
-      'exercise',
-    ])) {
-      metrics.add(HealthMetricType.workoutSession.wireName);
-    }
-    if (_containsAny(text, const <String>['体重', 'weight'])) {
-      metrics.add(HealthMetricType.weight.wireName);
-    }
-    if (_containsAny(text, const <String>['正念', '冥想', 'mindful'])) {
-      metrics.add(HealthMetricType.mindfulMinutes.wireName);
-    }
-    if (_containsAny(text, const <String>['距离', 'distance'])) {
-      metrics.add(HealthMetricType.distanceWalkingRunning.wireName);
-    }
-    if (_containsAny(text, const <String>['楼层', '爬楼', 'flights'])) {
-      metrics.add(HealthMetricType.flightsClimbed.wireName);
-    }
-    if (_containsAny(text, const <String>[
-      '全部健康',
-      '所有健康',
-      '健康概览',
-      'overall health',
-      'all health',
-    ])) {
-      metrics
-        ..clear()
-        ..addAll(HealthMetricType.values.map((metric) => metric.wireName));
-    }
-    if (metrics.isEmpty) {
-      return null;
-    }
-
-    final sleepOnly =
-        metrics.length == 1 &&
-        metrics.single == HealthMetricType.sleepSession.wireName;
-    final period =
-        sleepOnly ||
-            _containsAny(text, const <String>[
-              '过去24',
-              '24h',
-              '24 h',
-              '昨晚',
-              '最近',
-            ])
-        ? HealthSummaryService.periodLast24h
-        : HealthSummaryService.periodToday;
-    return _HealthSummaryRequest(
-      period: period,
-      metrics: metrics.toList(growable: false),
-    );
-  }
-
-  bool _containsAny(String text, List<String> needles) {
-    for (final needle in needles) {
-      if (text.contains(needle)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   int? _sampleCount(Map<String, Object?> summary) {
@@ -311,11 +256,4 @@ Assistant:
     }
     return count == 0 ? null : count;
   }
-}
-
-final class _HealthSummaryRequest {
-  const _HealthSummaryRequest({required this.period, required this.metrics});
-
-  final String period;
-  final List<String> metrics;
 }

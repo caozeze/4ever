@@ -1,14 +1,16 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gemma_local/application/ai/demo_chat_controller.dart';
 import 'package:gemma_local/application/ai/generation_budget_policy.dart';
 import 'package:gemma_local/application/ai/model/device_capabilities_reader.dart';
 import 'package:gemma_local/application/ai/model/model_artifact_preparer.dart';
 import 'package:gemma_local/application/ai/model/model_catalog.dart';
-import 'package:gemma_local/application/ai/model/model_file_downloader.dart';
+import 'package:gemma_local/application/ai/model/model_connection_controller.dart';
 import 'package:gemma_local/application/ai/model/model_lifecycle_service.dart';
 import 'package:gemma_local/application/ai/model/model_registry_store.dart';
 import 'package:gemma_local/application/ai/model/model_selection_service.dart';
@@ -16,9 +18,9 @@ import 'package:gemma_local/application/ai/model/model_storage_paths.dart';
 import 'package:gemma_local/core/native/device_capabilities_channel_reader.dart';
 import 'package:gemma_local/core/native/generated/device_capabilities_api.g.dart'
     as pigeon;
+import 'package:gemma_local/data/model/application_support_model_storage_paths.dart';
 import 'package:gemma_local/data/model/asset_model_catalog.dart';
 import 'package:gemma_local/data/model/dart_model_file_verifier.dart';
-import 'package:gemma_local/data/model/hugging_face_model_repository.dart';
 import 'package:gemma_local/data/model/json_model_registry_store.dart';
 import 'package:gemma_local/data/model/model_artifact_preparers.dart';
 import 'package:gemma_local/domain/ai/device_capabilities.dart';
@@ -29,6 +31,7 @@ import 'package:gemma_local/domain/ai/llm_runtime.dart';
 import 'package:gemma_local/domain/ai/llm_runtime_status.dart';
 import 'package:gemma_local/domain/ai/llm_token_event.dart';
 import 'package:gemma_local/domain/ai/model_failure_reason.dart';
+import 'package:gemma_local/domain/ai/model_install_progress.dart';
 import 'package:gemma_local/domain/ai/model_install_record.dart';
 import 'package:gemma_local/domain/ai/model_install_status.dart';
 import 'package:gemma_local/domain/ai/model_manifest.dart';
@@ -259,48 +262,83 @@ void main() {
     expect(persisted?.errorMessage, 'legacy smoke failure');
   });
 
+  test('fixed app support path resolver returns the n1024 demo path', () async {
+    final tempDir = await Directory.systemTemp.createTemp('fixed_model_path_');
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final paths = ApplicationSupportModelStoragePaths(
+      rootDirectoryProvider: () async => tempDir,
+    );
+
+    final path = await paths.modelFilePath(_testModel());
+
+    expect(
+      path,
+      p.join(tempDir.path, 'models', 'gemma-4-e2b-it-coreml-ios', 'n1024'),
+    );
+    expect(await Directory(path).exists(), isTrue);
+    expect(
+      await paths.registryFilePath(),
+      p.join(tempDir.path, 'model_registry.json'),
+    );
+  });
+
   test(
-    'lifecycle downloads, registers, initializes, and marks ready',
+    'CoreML n1024 readiness accepts only the fixed chunked bundle',
     () async {
-      final tempDir = await Directory.systemTemp.createTemp('model_lifecycle_');
+      final tempDir = await Directory.systemTemp.createTemp('n1024_ready_');
       addTearDown(() async => tempDir.delete(recursive: true));
-      final model = _testModel();
-      final registry = _MemoryRegistryStore();
-      final runtime = _FakeLlmRuntime();
-      final service = ModelLifecycleService(
-        catalog: _FakeCatalog(
-          ModelManifest(schemaVersion: '1.0', models: [model]),
-        ),
-        deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
-        selectionService: const ModelSelectionService(),
-        storagePaths: _FakeStoragePaths(p.join(tempDir.path, model.fileName)),
-        artifactPreparer: const FileModelArtifactPreparer(
-          downloader: _FakeDownloader(),
-          verifier: DartModelFileVerifier(),
-        ),
-        registryStore: registry,
-        runtime: runtime,
+      await _writeReadyCoreMlBundle(tempDir.path);
+
+      final readiness = await const CoreMlN1024BundleReadiness().readiness(
+        model: _testCoreMlModel(),
+        targetPath: tempDir.path,
       );
 
-      final progress = await service.prepareDemoModel().toList();
+      expect(readiness.isReady, isTrue);
+    },
+  );
 
-      expect(
-        progress.map((item) => item.status),
-        containsAllInOrder([
-          ModelInstallStatus.downloading,
-          ModelInstallStatus.verifying,
-          ModelInstallStatus.installed,
-          ModelInstallStatus.loading,
-          ModelInstallStatus.ready,
-        ]),
+  test('CoreML n1024 readiness reports the missing fixed path', () async {
+    final tempDir = await Directory.systemTemp.createTemp('n1024_missing_');
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final targetPath = p.join(tempDir.path, 'models', 'missing');
+
+    final readiness = await const CoreMlN1024BundleReadiness().readiness(
+      model: _testCoreMlModel(),
+      targetPath: targetPath,
+    );
+
+    expect(readiness.isReady, isFalse);
+    expect(readiness.message, contains('Local Gemma model is missing at'));
+    expect(readiness.message, contains(targetPath));
+  });
+
+  test(
+    'CoreML n1024 readiness rejects monolithic CoreML fallback layouts',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'n1024_monolithic_',
       );
-      expect(runtime.initializedModelId, model.id);
-      expect(runtime.initializedConfig?.runtime, 'litert_lm');
-      expect(runtime.initializedConfig?.artifactType, 'litertlm_file');
-      expect(runtime.initializedConfig?.revision, 'commit');
-      expect(runtime.generatedPrompts, isEmpty);
-      expect(runtime.generatedConfigs, isEmpty);
-      expect((await registry.read(model.id))?.status, ModelInstallStatus.ready);
+      addTearDown(() async => tempDir.delete(recursive: true));
+      for (final path in <String>[
+        'model_config.json',
+        'hf_model/config.json',
+        'hf_model/tokenizer.json',
+        'hf_model/tokenizer_config.json',
+        'model.mlmodelc/coremldata.bin',
+      ]) {
+        final file = File(p.join(tempDir.path, path));
+        await file.parent.create(recursive: true);
+        await file.writeAsString(path);
+      }
+
+      final readiness = await const CoreMlN1024BundleReadiness().readiness(
+        model: _testCoreMlModel(),
+        targetPath: tempDir.path,
+      );
+
+      expect(readiness.isReady, isFalse);
+      expect(readiness.message, contains('chunk1.mlmodelc/coremldata.bin'));
     },
   );
 
@@ -310,7 +348,7 @@ void main() {
     );
     addTearDown(() async => tempDir.delete(recursive: true));
     final model = _testCoreMlModel();
-    final preparer = _RecordingArtifactPreparer();
+    final preparer = _RecordingArtifactPreparer()..ready = true;
     final registry = _MemoryRegistryStore();
     final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
     final service = ModelLifecycleService(
@@ -325,123 +363,65 @@ void main() {
       runtime: runtime,
     );
 
-    final progress = await service.prepareDemoModel().toList();
+    final progress = await service.ensureDemoModelReady().toList();
 
-    expect(progress.map((item) => item.status), [ModelInstallStatus.ready]);
-    expect(preparer.prepareCalls, 0);
+    expect(progress.map((item) => item.status), [
+      ModelInstallStatus.notInstalled,
+      ModelInstallStatus.ready,
+    ]);
     expect(runtime.initializeCalls, 0);
-    expect(runtime.generatedPrompts, isEmpty);
     expect((await registry.read(model.id))?.status, ModelInstallStatus.ready);
   });
 
   test(
-    'CoreML bundle preparer downloads allowed files and reaches readiness',
-    () async {
-      final tempDir = await Directory.systemTemp.createTemp('coreml_bundle_');
-      addTearDown(() async => tempDir.delete(recursive: true));
-      const repository = _FakeHuggingFaceModelRepository(
-        files: <String>[
-          'README.md',
-          'model_config.json',
-          'hf_model/config.json',
-          'hf_model/tokenizer.json',
-          'hf_model/tokenizer_config.json',
-          'swa/chunk1.mlmodelc/model.mil',
-          'swa/chunk1.mlmodelc/coremldata.bin',
-          'swa/chunk1.mlmodelc/weights/weight.bin',
-          'swa/chunk2_3way.mlmodelc/coremldata.bin',
-          'swa/chunk3_3way.mlmodelc/coremldata.bin',
-          'embed_tokens_q8.bin',
-          'embed_tokens_scales.bin',
-          'embed_tokens_per_layer_q8.bin',
-          'embed_tokens_per_layer_scales.bin',
-          'per_layer_projection.bin',
-          'notes.txt',
-        ],
-      );
-      const preparer = CoreMlBundleArtifactPreparer(repository: repository);
-      final model = _testCoreMlModel();
-
-      await preparer.prepare(
-        model: model,
-        targetPath: tempDir.path,
-        requiresWiFi: true,
-      );
-
-      expect(await File(p.join(tempDir.path, 'README.md')).exists(), isFalse);
-      expect(
-        await File(p.join(tempDir.path, 'model_config.json')).exists(),
-        isTrue,
-      );
-      expect(
-        await File(p.join(tempDir.path, 'hf_model/tokenizer.json')).exists(),
-        isTrue,
-      );
-      expect(
-        await File(p.join(tempDir.path, 'chunk1.mlmodelc/model.mil')).exists(),
-        isTrue,
-      );
-      expect(
-        await File(
-          p.join(tempDir.path, 'swa/chunk1.mlmodelc/model.mil'),
-        ).exists(),
-        isFalse,
-      );
-      final readiness = await preparer.readiness(
-        model: model,
-        targetPath: tempDir.path,
-      );
-      expect(readiness.isReady, isTrue);
-    },
-  );
-
-  test('CoreML bundle readiness reports missing bundle parts', () async {
-    final tempDir = await Directory.systemTemp.createTemp('coreml_missing_');
-    addTearDown(() async => tempDir.delete(recursive: true));
-    const preparer = CoreMlBundleArtifactPreparer(
-      repository: _FakeHuggingFaceModelRepository(),
-    );
-    final model = _testCoreMlModel();
-
-    var readiness = await preparer.readiness(
-      model: model,
-      targetPath: tempDir.path,
-    );
-    expect(readiness.isReady, isFalse);
-    expect(readiness.message, contains('model_config.json'));
-
-    await File(p.join(tempDir.path, 'model_config.json')).writeAsString('{}');
-    readiness = await preparer.readiness(
-      model: model,
-      targetPath: tempDir.path,
-    );
-    expect(readiness.isReady, isFalse);
-    expect(readiness.message, contains('hf_model'));
-
-    final hfModelDir = Directory(p.join(tempDir.path, 'hf_model'));
-    await hfModelDir.create();
-    await File(p.join(hfModelDir.path, 'config.json')).writeAsString('{}');
-    await File(p.join(hfModelDir.path, 'tokenizer.json')).writeAsString('{}');
-    await File(
-      p.join(hfModelDir.path, 'tokenizer_config.json'),
-    ).writeAsString('{}');
-    readiness = await preparer.readiness(
-      model: model,
-      targetPath: tempDir.path,
-    );
-    expect(readiness.isReady, isFalse);
-    expect(readiness.message, contains('.mlmodelc'));
-  });
-
-  test(
-    'lifecycle uses artifact preparer for CoreML bundle before runtime',
+    'lifecycle initializes from the fixed local CoreML bundle without download',
     () async {
       final tempDir = await Directory.systemTemp.createTemp(
         'coreml_lifecycle_',
       );
       addTearDown(() async => tempDir.delete(recursive: true));
       final model = _testCoreMlModel();
-      final preparer = _RecordingArtifactPreparer();
+      final registry = _MemoryRegistryStore();
+      final runtime = _FakeLlmRuntime();
+      await _writeReadyCoreMlBundle(tempDir.path);
+      final service = ModelLifecycleService(
+        catalog: _FakeCatalog(
+          ModelManifest(schemaVersion: '1.0', models: [model]),
+        ),
+        deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+        selectionService: const ModelSelectionService(),
+        storagePaths: _FakeStoragePaths(tempDir.path),
+        artifactPreparer: const CoreMlN1024BundleReadiness(),
+        registryStore: registry,
+        runtime: runtime,
+      );
+
+      final progress = await service.ensureDemoModelReady().toList();
+
+      expect(progress.map((item) => item.status), [
+        ModelInstallStatus.notInstalled,
+        ModelInstallStatus.installed,
+        ModelInstallStatus.loading,
+        ModelInstallStatus.ready,
+      ]);
+      expect(runtime.initializedModelId, model.id);
+      expect(runtime.initializedConfig?.localPath, tempDir.path);
+      final record = await registry.read(model.id);
+      expect(record?.localPath, tempDir.path);
+      expect(record?.runtime, 'coreml_llm');
+      expect(record?.artifactType, 'coreml_bundle');
+      expect(record?.status, ModelInstallStatus.ready);
+    },
+  );
+
+  test(
+    'lifecycle fails locally when the fixed model directory is incomplete',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'coreml_lifecycle_missing_',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final model = _testCoreMlModel();
       final registry = _MemoryRegistryStore();
       final runtime = _FakeLlmRuntime();
       final service = ModelLifecycleService(
@@ -451,31 +431,71 @@ void main() {
         deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
         selectionService: const ModelSelectionService(),
         storagePaths: _FakeStoragePaths(tempDir.path),
-        artifactPreparer: preparer,
+        artifactPreparer: const CoreMlN1024BundleReadiness(),
         registryStore: registry,
         runtime: runtime,
       );
 
-      final progress = await service.prepareDemoModel().toList();
+      final progress = await service.ensureDemoModelReady().toList();
 
-      expect(preparer.prepareCalls, 1);
+      expect(progress.map((item) => item.status), [
+        ModelInstallStatus.notInstalled,
+        ModelInstallStatus.failed,
+      ]);
+      expect(progress.last.failureReason, ModelFailureReason.modelNotFound);
+      expect(progress.last.message, contains(tempDir.path));
+      expect(runtime.initializeCalls, 0);
       expect(
-        progress.map((item) => item.status),
-        containsAllInOrder([
-          ModelInstallStatus.downloading,
-          ModelInstallStatus.verifying,
-          ModelInstallStatus.installed,
-          ModelInstallStatus.loading,
-          ModelInstallStatus.ready,
-        ]),
+        (await registry.read(model.id))?.status,
+        ModelInstallStatus.failed,
       );
-      expect(runtime.initializedModelId, model.id);
-      expect(runtime.generatedPrompts, isEmpty);
-      final record = await registry.read(model.id);
-      expect(record?.localPath, tempDir.path);
-      expect(record?.runtime, 'coreml_llm');
-      expect(record?.artifactType, 'coreml_bundle');
-      expect(record?.status, ModelInstallStatus.ready);
+    },
+  );
+
+  test(
+    'lifecycle ignores stale registry paths and uses resolved fixed path',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'coreml_lifecycle_stale_registry_',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final model = _testCoreMlModel();
+      final registry = _MemoryRegistryStore();
+      final now = DateTime.utc(2026, 5, 10);
+      await registry.upsert(
+        ModelInstallRecord(
+          modelId: model.id,
+          displayName: model.displayName,
+          localPath: '/stale/model/path',
+          sha256: model.sha256,
+          sizeBytes: model.sizeBytes,
+          sourceCommit: model.sourceCommit,
+          runtime: model.runtime,
+          artifactType: model.artifactType,
+          revision: model.revision,
+          status: ModelInstallStatus.ready,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+      final runtime = _FakeLlmRuntime();
+      await _writeReadyCoreMlBundle(tempDir.path);
+      final service = ModelLifecycleService(
+        catalog: _FakeCatalog(
+          ModelManifest(schemaVersion: '1.0', models: [model]),
+        ),
+        deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+        selectionService: const ModelSelectionService(),
+        storagePaths: _FakeStoragePaths(tempDir.path),
+        artifactPreparer: const CoreMlN1024BundleReadiness(),
+        registryStore: registry,
+        runtime: runtime,
+      );
+
+      await service.ensureDemoModelReady().toList();
+
+      expect(runtime.initializedConfig?.localPath, tempDir.path);
+      expect((await registry.read(model.id))?.localPath, tempDir.path);
     },
   );
 
@@ -668,6 +688,151 @@ void main() {
     );
     expect(response.text, contains('and finish with a complete sentence.'));
   });
+
+  test('model connection timeout exposes retry state', () async {
+    final controller = ModelConnectionController(
+      loadController: () => Completer<DemoChatController>().future,
+      connectionTimeout: const Duration(milliseconds: 50),
+    );
+
+    await controller.ensureModelReady();
+
+    expect(controller.snapshot.status, ModelInstallStatus.failed);
+    expect(controller.snapshot.message, contains('timed out'));
+  });
+
+  test('model connection retry starts fresh after timeout', () async {
+    final model = _testCoreMlModel();
+    final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
+    var loadCalls = 0;
+    final controller = ModelConnectionController(
+      loadController: () {
+        loadCalls += 1;
+        if (loadCalls == 1) {
+          return Completer<DemoChatController>().future;
+        }
+        return Future<DemoChatController>.value(
+          _testDemoChatController(model: model, runtime: runtime),
+        );
+      },
+      connectionTimeout: const Duration(milliseconds: 50),
+    );
+
+    await controller.ensureModelReady();
+    await controller.retry();
+
+    expect(loadCalls, 2);
+    expect(controller.snapshot.status, ModelInstallStatus.ready);
+  });
+
+  test('model connection cancels active stream after timeout', () async {
+    final model = _testCoreMlModel();
+    final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
+    var staleStreamCanceled = false;
+    final staleProgress = StreamController<ModelInstallProgress>(
+      onCancel: () {
+        staleStreamCanceled = true;
+      },
+    );
+    var loadCalls = 0;
+    final controller = ModelConnectionController(
+      loadController: () {
+        loadCalls += 1;
+        if (loadCalls == 1) {
+          return Future<DemoChatController>.value(
+            _StreamingDemoChatController(staleProgress.stream),
+          );
+        }
+        return Future<DemoChatController>.value(
+          _testDemoChatController(model: model, runtime: runtime),
+        );
+      },
+      connectionTimeout: const Duration(milliseconds: 50),
+    );
+
+    await controller.ensureModelReady();
+
+    expect(staleStreamCanceled, isTrue);
+    expect(controller.snapshot.status, ModelInstallStatus.failed);
+
+    staleProgress.add(
+      const ModelInstallProgress(
+        modelId: 'gemma-4-e2b-it-coreml-ios',
+        status: ModelInstallStatus.ready,
+        message: 'stale ready',
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.snapshot.status, ModelInstallStatus.failed);
+
+    await controller.retry();
+
+    expect(loadCalls, 2);
+    expect(controller.snapshot.status, ModelInstallStatus.ready);
+    await staleProgress.close();
+  });
+
+  test(
+    'model connection ignores late controller from timed out attempt',
+    () async {
+      final model = _testCoreMlModel();
+      final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
+      final firstCompleter = Completer<DemoChatController>();
+      var staleEnsureCalls = 0;
+      var loadCalls = 0;
+      final controller = ModelConnectionController(
+        loadController: () {
+          loadCalls += 1;
+          if (loadCalls == 1) {
+            return firstCompleter.future;
+          }
+          return Future<DemoChatController>.value(
+            _testDemoChatController(model: model, runtime: runtime),
+          );
+        },
+        connectionTimeout: const Duration(milliseconds: 50),
+      );
+
+      await controller.ensureModelReady();
+      await controller.retry();
+      firstCompleter.complete(
+        _ScriptedDemoChatController(
+          onEnsureModelReady: () {
+            staleEnsureCalls += 1;
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(loadCalls, 2);
+      expect(staleEnsureCalls, 0);
+      expect(controller.snapshot.status, ModelInstallStatus.ready);
+    },
+  );
+
+  test(
+    'model connection lifecycle only cancels on background states',
+    () async {
+      final model = _testCoreMlModel();
+      final runtime = _FakeLlmRuntime()..initializedModelId = model.id;
+      final chatController = _testDemoChatController(
+        model: model,
+        runtime: runtime,
+      );
+      final controller = ModelConnectionController(
+        loadController: () async => chatController,
+      );
+      await controller.ensureModelReady();
+
+      await controller.handleLifecycleState(AppLifecycleState.inactive);
+      await controller.handleLifecycleState(AppLifecycleState.hidden);
+      expect(runtime.cancelCalls, 0);
+
+      await controller.handleLifecycleState(AppLifecycleState.paused);
+      await controller.handleLifecycleState(AppLifecycleState.detached);
+      expect(runtime.cancelCalls, 2);
+    },
+  );
 }
 
 DemoChatController _testDemoChatController({
@@ -685,12 +850,66 @@ DemoChatController _testDemoChatController({
       deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
       selectionService: const ModelSelectionService(),
       storagePaths: const _FakeStoragePaths('/tmp/gemma4-e2b'),
-      artifactPreparer: _RecordingArtifactPreparer(),
+      artifactPreparer: _RecordingArtifactPreparer()..ready = true,
       registryStore: _MemoryRegistryStore(),
       runtime: runtime,
     ),
     runtime: runtime,
   );
+}
+
+class _ScriptedDemoChatController extends DemoChatController {
+  _ScriptedDemoChatController({this.onEnsureModelReady})
+    : super(
+        catalog: _FakeCatalog(
+          ModelManifest(
+            schemaVersion: '1.0',
+            models: <ModelManifestEntry>[_scriptedModel],
+          ),
+        ),
+        deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+        selectionService: const ModelSelectionService(),
+        lifecycleService: ModelLifecycleService(
+          catalog: _FakeCatalog(
+            ModelManifest(
+              schemaVersion: '1.0',
+              models: <ModelManifestEntry>[_scriptedModel],
+            ),
+          ),
+          deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+          selectionService: const ModelSelectionService(),
+          storagePaths: const _FakeStoragePaths('/tmp/gemma4-e2b'),
+          artifactPreparer: _RecordingArtifactPreparer()..ready = true,
+          registryStore: _MemoryRegistryStore(),
+          runtime: _FakeLlmRuntime()..initializedModelId = _scriptedModel.id,
+        ),
+        runtime: _FakeLlmRuntime()..initializedModelId = _scriptedModel.id,
+      );
+
+  static final ModelManifestEntry _scriptedModel = _testCoreMlModel();
+
+  final VoidCallback? onEnsureModelReady;
+
+  @override
+  Stream<ModelInstallProgress> ensureModelReady({
+    String preferredModelId = DemoChatController.defaultPreferredModelId,
+  }) {
+    onEnsureModelReady?.call();
+    return const Stream<ModelInstallProgress>.empty();
+  }
+}
+
+class _StreamingDemoChatController extends _ScriptedDemoChatController {
+  _StreamingDemoChatController(this.progressStream);
+
+  final Stream<ModelInstallProgress> progressStream;
+
+  @override
+  Stream<ModelInstallProgress> ensureModelReady({
+    String preferredModelId = DemoChatController.defaultPreferredModelId,
+  }) {
+    return progressStream;
+  }
 }
 
 ModelManifestEntry _testModel() {
@@ -762,15 +981,50 @@ ModelManifestEntry _testCoreMlModel({
     repoId: 'mlboydaisuke/gemma-4-E2B-coreml',
     allowPatterns: <String>[
       'model_config.json',
-      'hf_model/**',
+      'hf_model/config.json',
+      'hf_model/tokenizer.json',
+      'hf_model/tokenizer_config.json',
       'swa/chunk1.mlmodelc/**',
       'swa/chunk2_3way.mlmodelc/**',
       'swa/chunk3_3way.mlmodelc/**',
-      '*.bin',
-      '*.npy',
-      '*.txt',
+      'embed_tokens_q8.bin',
+      'embed_tokens_scales.bin',
+      'embed_tokens_per_layer_q8.bin',
+      'embed_tokens_per_layer_scales.bin',
+      'per_layer_projection.bin',
+      'per_layer_norm_weight.bin',
+      'cos_sliding.npy',
+      'sin_sliding.npy',
+      'cos_full.npy',
+      'sin_full.npy',
     ],
   );
+}
+
+Future<void> _writeReadyCoreMlBundle(String targetPath) async {
+  for (final path in <String>[
+    'model_config.json',
+    'hf_model/config.json',
+    'hf_model/tokenizer.json',
+    'hf_model/tokenizer_config.json',
+    'chunk1.mlmodelc/coremldata.bin',
+    'chunk2_3way.mlmodelc/coremldata.bin',
+    'chunk3_3way.mlmodelc/coremldata.bin',
+    'embed_tokens_q8.bin',
+    'embed_tokens_scales.bin',
+    'embed_tokens_per_layer_q8.bin',
+    'embed_tokens_per_layer_scales.bin',
+    'per_layer_projection.bin',
+    'per_layer_norm_weight.bin',
+    'cos_sliding.npy',
+    'sin_sliding.npy',
+    'cos_full.npy',
+    'sin_full.npy',
+  ]) {
+    final file = File(p.join(targetPath, path));
+    await file.parent.create(recursive: true);
+    await file.writeAsString(path);
+  }
 }
 
 class _FakeCatalog implements ModelCatalog {
@@ -823,65 +1077,8 @@ class _FakeStoragePaths implements ModelStoragePaths {
   }
 }
 
-class _FakeDownloader implements ModelFileDownloader {
-  const _FakeDownloader();
-
-  @override
-  Future<String> download({
-    required ModelManifestEntry model,
-    required String destinationPath,
-    required bool requiresWiFi,
-    ModelDownloadProgressCallback? onProgress,
-  }) async {
-    final file = File(destinationPath);
-    await file.parent.create(recursive: true);
-    await file.writeAsString('ready');
-    onProgress?.call(1);
-    return destinationPath;
-  }
-}
-
-class _FakeHuggingFaceModelRepository implements HuggingFaceModelRepository {
-  const _FakeHuggingFaceModelRepository({this.files = const <String>[]});
-
-  final List<String> files;
-
-  @override
-  Future<void> downloadFile({
-    required String repoId,
-    required String revision,
-    required String remotePath,
-    required String destinationPath,
-  }) async {
-    final file = File(destinationPath);
-    await file.parent.create(recursive: true);
-    await file.writeAsString(remotePath);
-  }
-
-  @override
-  Future<List<String>> listFiles({
-    required String repoId,
-    required String revision,
-  }) async {
-    return files;
-  }
-}
-
 class _RecordingArtifactPreparer implements ModelArtifactPreparer {
-  var prepareCalls = 0;
   var ready = false;
-
-  @override
-  Future<void> prepare({
-    required ModelManifestEntry model,
-    required String targetPath,
-    required bool requiresWiFi,
-    ModelDownloadProgressCallback? onProgress,
-  }) async {
-    prepareCalls += 1;
-    ready = true;
-    onProgress?.call(1);
-  }
 
   @override
   Future<ModelArtifactReadiness> readiness({
@@ -920,12 +1117,15 @@ class _FakeLlmRuntime implements LlmRuntime {
   LlmModelConfig? initializedConfig;
   String responseText = 'The answer is 4.';
   var initializeCalls = 0;
+  var cancelCalls = 0;
   final List<String> responseTexts = <String>[];
   final List<String> generatedPrompts = <String>[];
   final List<LlmGenerationConfig> generatedConfigs = <LlmGenerationConfig>[];
 
   @override
-  Future<void> cancel() async {}
+  Future<void> cancel() async {
+    cancelCalls += 1;
+  }
 
   @override
   Future<LlmResponse> generateOnce({

@@ -6,6 +6,8 @@ final class AgentTraceEvent {
   const AgentTraceEvent({
     required this.event,
     this.metricNames,
+    this.modelId,
+    this.errorCode,
     this.period,
     this.status,
     this.sampleCount,
@@ -15,6 +17,8 @@ final class AgentTraceEvent {
 
   final String event;
   final List<String>? metricNames;
+  final String? modelId;
+  final String? errorCode;
   final String? period;
   final String? status;
   final int? sampleCount;
@@ -25,6 +29,8 @@ final class AgentTraceEvent {
     return <String, Object?>{
       'event': event,
       if (metricNames != null) 'metric_names': metricNames,
+      if (modelId != null) 'model_id': modelId,
+      if (errorCode != null) 'error_code': errorCode,
       if (period != null) 'period': period,
       if (status != null) 'status': status,
       if (sampleCount != null) 'sample_count': sampleCount,

@@ -30,6 +30,10 @@ void main() {
     );
 
     expect(result['status'], HealthSummaryService.statusOk);
+    expect(result['period'], HealthSummaryService.periodToday);
+    expect(result['requested_metrics'], <String>['activeEnergy']);
+    expect(result['start_time'], DateTime(2026, 5, 10).toIso8601String());
+    expect(result['end_time'], DateTime(2026, 5, 10, 15, 30).toIso8601String());
     expect(gateway.requestedPermissions, isNull);
     expect(gateway.readMetricTypes, <HealthMetricType>{
       HealthMetricType.activeEnergy,
@@ -74,6 +78,66 @@ void main() {
     expect(result['metrics'], isEmpty);
     expect(traceSink.events.last.status, HealthSummaryService.statusNoData);
   });
+
+  test('summarizes latest heart rate with sample timestamp', () async {
+    final gateway = FakeHealthDataGateway()
+      ..aggregates = <HealthDataAggregate>[
+        HealthDataAggregate(
+          type: HealthMetricType.heartRate,
+          unit: 'bpm',
+          sampleCount: 1,
+          value: 72,
+          sampleEndTime: DateTime(2026, 5, 10, 15, 25),
+        ),
+      ];
+    final service = HealthSummaryService(gateway: gateway);
+
+    final result = await service.getHealthSummary(
+      period: HealthSummaryService.periodLatest,
+      metrics: <String>['heartRate'],
+      now: DateTime(2026, 5, 10, 15, 30),
+    );
+
+    expect(result['status'], HealthSummaryService.statusOk);
+    expect(gateway.aggregateReadModes, <String>['latest']);
+    expect(gateway.readStart, DateTime.fromMillisecondsSinceEpoch(0));
+    expect(gateway.readEnd, DateTime(2026, 5, 10, 15, 30));
+    final metrics = result['metrics']! as Map<String, Object?>;
+    expect(metrics['heartRate'], <String, Object?>{
+      'value': 72.0,
+      'unit': 'bpm',
+      'sample_count': 1,
+      'as_of': DateTime(2026, 5, 10, 15, 25).toIso8601String(),
+      'sample_end_time': DateTime(2026, 5, 10, 15, 25).toIso8601String(),
+    });
+  });
+
+  test(
+    'summarizes partial multi-metric result and reports missing metrics',
+    () async {
+      final gateway = FakeHealthDataGateway()
+        ..aggregates = const <HealthDataAggregate>[
+          HealthDataAggregate(
+            type: HealthMetricType.steps,
+            unit: 'count',
+            sampleCount: 1,
+            value: 2400,
+          ),
+        ];
+      final service = HealthSummaryService(gateway: gateway);
+
+      final result = await service.getHealthSummary(
+        period: HealthSummaryService.periodToday,
+        metrics: <String>['steps', 'activeEnergy'],
+        now: DateTime(2026, 5, 10, 15, 30),
+      );
+
+      expect(result['status'], HealthSummaryService.statusOk);
+      expect(result['missing_metrics'], <String>['activeEnergy']);
+      final metrics = result['metrics']! as Map<String, Object?>;
+      expect(metrics.keys, <String>['steps']);
+    },
+  );
 
   test('returns unavailable when HealthKit is not available', () async {
     final gateway = FakeHealthDataGateway()..available = false;

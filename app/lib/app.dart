@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'core/providers/model_management_providers.dart';
 import 'presentation/app_navigation_drawer.dart';
 import 'presentation/chat/chat_page.dart';
 import 'presentation/health/health_permissions_page.dart';
@@ -81,8 +85,41 @@ final GoRouter _router = GoRouter(
   ],
 );
 
-class GemmaLocalApp extends StatelessWidget {
+class GemmaLocalApp extends ConsumerStatefulWidget {
   const GemmaLocalApp({super.key});
+
+  @override
+  ConsumerState<GemmaLocalApp> createState() => _GemmaLocalAppState();
+}
+
+class _GemmaLocalAppState extends ConsumerState<GemmaLocalApp>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      unawaited(
+        ref.read(modelConnectionControllerProvider).ensureModelReady(),
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    unawaited(
+      ref.read(modelConnectionControllerProvider).handleLifecycleState(state),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {

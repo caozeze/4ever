@@ -4,6 +4,7 @@ import '../../domain/ai/model_install_progress.dart';
 import '../../domain/ai/model_manifest_entry.dart';
 import 'generation_budget_policy.dart';
 import 'local_health_agent_service.dart';
+import 'model/demo_model_identity.dart';
 import 'model/device_capabilities_reader.dart';
 import 'model/model_catalog.dart';
 import 'model/model_lifecycle_service.dart';
@@ -28,10 +29,7 @@ class DemoChatController {
        _generationBudgetPolicy = generationBudgetPolicy;
 
   static const String defaultPrompt = 'What is the capital of France?';
-  static const String defaultPreferredModelId = String.fromEnvironment(
-    'GEMMA_MVP_MODEL_ID',
-    defaultValue: 'gemma-4-e2b-it-coreml-ios',
-  );
+  static const String defaultPreferredModelId = DemoModelIdentity.modelId;
 
   static const String continuationPromptPrefix =
       'Continue the previous answer from exactly where it stopped. '
@@ -57,12 +55,14 @@ class DemoChatController {
     return model;
   }
 
-  Stream<ModelInstallProgress> prepareModel({
+  Stream<ModelInstallProgress> ensureModelReady({
     String preferredModelId = defaultPreferredModelId,
   }) {
-    return _lifecycleService.prepareDemoModel(
-      preferredModelId: preferredModelId,
-    );
+    return _lifecycleService.ensureDemoModelReady();
+  }
+
+  Future<void> cancelActiveGeneration() {
+    return _runtime.cancel();
   }
 
   Future<LlmResponse> ask({

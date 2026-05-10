@@ -28,12 +28,14 @@ class IosHealthDataApi {
     required List<String> metricTypes,
     required DateTime startTime,
     required DateTime endTime,
+    String readMode = 'aggregate',
   }) async {
     final result = await _methodChannel
         .invokeListMethod<Object?>('readAggregates', <String, Object?>{
           'metric_types': metricTypes,
           'start_time_millis': startTime.millisecondsSinceEpoch,
           'end_time_millis': endTime.millisecondsSinceEpoch,
+          'read_mode': readMode,
         });
 
     return (result ?? <Object?>[])

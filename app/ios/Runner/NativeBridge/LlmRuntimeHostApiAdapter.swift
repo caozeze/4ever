@@ -9,8 +9,14 @@ final class LlmRuntimeHostApiAdapter: NSObject {
   private var state = "unloaded"
   private var lastErrorCode: String?
   private var lastErrorMessage: String?
+  private var initializationTask: Task<Void, Never>?
+  private var activeInitializationId: UUID?
+  private var activeInitializationResult: FlutterResult?
   private var generationTask: Task<Void, Never>?
   private var activeGenerationId: UUID?
+  private var initializationTimeoutNanoseconds: UInt64 {
+    return 90_000_000_000
+  }
   private var generationTimeoutNanoseconds: UInt64 {
     return 300_000_000_000
   }
@@ -36,10 +42,21 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     case "cancel":
       generationTask?.cancel()
       generationTask = nil
+      activeGenerationId = nil
       result(nil)
     case "unload":
+      if let activeInitializationId, let activeInitializationResult {
+        completeInitialization(
+          activeInitializationId,
+          result: activeInitializationResult,
+          payload: nativeFlutterError(.modelLoadFailed, message: "Model initialization was cancelled.")
+        )
+      }
+      initializationTask?.cancel()
+      initializationTask = nil
       generationTask?.cancel()
       generationTask = nil
+      activeGenerationId = nil
       llm = nil
       loadedModelId = nil
       state = "unloaded"
@@ -70,14 +87,31 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     state = "loading"
     lastErrorCode = nil
     lastErrorMessage = nil
+    if let activeInitializationId, let activeInitializationResult {
+      completeInitialization(
+        activeInitializationId,
+        result: activeInitializationResult,
+        payload: nativeFlutterError(.modelLoadFailed, message: "Model initialization was replaced.")
+      )
+    }
+    initializationTask?.cancel()
+    activeInitializationId = nil
+    activeInitializationResult = nil
+    let initializationId = UUID()
+    activeInitializationId = initializationId
+    activeInitializationResult = result
+    NSLog("[CoreMLLLM] event=model_initialize_start model_id=%@", modelId)
 
-    Task {
-      do {
-        let directory = try await resolveModelDirectory(
+    initializationTask = Task { [weak self] in
+      let loadTask = Task<CoreMLLLM, Error> { [weak self] in
+        guard let self else {
+          throw CancellationError()
+        }
+        let directory = try await self.resolveModelDirectory(
           modelId: modelId,
           localPath: localPath
         )
-        let computeUnits = selectedComputeUnits()
+        let computeUnits = self.selectedComputeUnits()
         NSLog("[CoreMLLLM] initialize modelId=%@ path=%@ computeUnits=%@", modelId, directory.path, String(describing: computeUnits))
         let loaded = try await CoreMLLLM.load(from: directory, computeUnits: computeUnits) { status in
           NSLog("[CoreMLLLM] %@", status)
@@ -87,20 +121,77 @@ final class LlmRuntimeHostApiAdapter: NSObject {
         loaded.crossVocabEnabled = false
         loaded.lookaheadEnabled = false
         NSLog("[CoreMLLLM] speculative paths disabled for MVP serial decode")
+        return loaded
+      }
+      let timeoutTask = Task { [weak self] in
+        try? await Task.sleep(nanoseconds: self?.initializationTimeoutNanoseconds ?? 300_000_000_000)
+        guard !Task.isCancelled else {
+          return
+        }
+        loadTask.cancel()
         DispatchQueue.main.async {
+          guard let self, self.activeInitializationId == initializationId else {
+            return
+          }
+          self.llm = nil
+          self.loadedModelId = nil
+          self.state = "failed"
+          self.lastErrorCode = NativeErrorCode.modelLoadFailed.rawValue
+          self.lastErrorMessage = "Model initialization timed out."
+          NSLog("[CoreMLLLM] event=model_initialize_timeout model_id=%@ error_code=%@", modelId, NativeErrorCode.modelLoadFailed.rawValue)
+          self.completeInitialization(
+            initializationId,
+            result: result,
+            payload: nativeFlutterError(.modelLoadFailed, message: self.lastErrorMessage!)
+          )
+        }
+      }
+      do {
+        let loaded = try await loadTask.value
+        timeoutTask.cancel()
+        DispatchQueue.main.async {
+          guard let self, self.activeInitializationId == initializationId else {
+            return
+          }
           self.llm = loaded
           self.loadedModelId = modelId
           self.state = "ready"
-          result(nil)
+          NSLog("[CoreMLLLM] event=model_initialize_ready model_id=%@", modelId)
+          self.completeInitialization(initializationId, result: result, payload: nil)
+        }
+      } catch is CancellationError {
+        timeoutTask.cancel()
+        DispatchQueue.main.async {
+          guard let self, self.activeInitializationId == initializationId else {
+            return
+          }
+          self.state = "failed"
+          self.lastErrorCode = NativeErrorCode.modelLoadFailed.rawValue
+          self.lastErrorMessage = "Model initialization was cancelled."
+          NSLog("[CoreMLLLM] event=model_initialize_failed model_id=%@ error_code=%@", modelId, NativeErrorCode.modelLoadFailed.rawValue)
+          self.completeInitialization(
+            initializationId,
+            result: result,
+            payload: nativeFlutterError(.modelLoadFailed, message: "Model initialization was cancelled.")
+          )
         }
       } catch {
+        timeoutTask.cancel()
         DispatchQueue.main.async {
+          guard let self, self.activeInitializationId == initializationId else {
+            return
+          }
           self.llm = nil
           self.loadedModelId = nil
           self.state = "failed"
           self.lastErrorCode = NativeErrorCode.modelLoadFailed.rawValue
           self.lastErrorMessage = String(describing: error)
-          result(nativeFlutterError(.modelLoadFailed, message: String(describing: error)))
+          NSLog("[CoreMLLLM] event=model_initialize_failed model_id=%@ error_code=%@", modelId, NativeErrorCode.modelLoadFailed.rawValue)
+          self.completeInitialization(
+            initializationId,
+            result: result,
+            payload: nativeFlutterError(.modelLoadFailed, message: String(describing: error))
+          )
         }
       }
     }
@@ -203,6 +294,16 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     result(payload)
   }
 
+  private func completeInitialization(_ initializationId: UUID, result: FlutterResult, payload: Any?) {
+    guard activeInitializationId == initializationId else {
+      return
+    }
+    activeInitializationId = nil
+    activeInitializationResult = nil
+    initializationTask = nil
+    result(payload)
+  }
+
   private func statusPayload() -> [String: Any?] {
     [
       "state": state,
@@ -252,23 +353,37 @@ final class LlmRuntimeHostApiAdapter: NSObject {
   private func isCoreMlBundleReady(at directory: URL) -> Bool {
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-          isDirectory.boolValue,
-          FileManager.default.fileExists(atPath: directory.appendingPathComponent("model_config.json").path) else {
+          isDirectory.boolValue else {
       return false
     }
 
-    let chunk1 = directory.appendingPathComponent("chunk1.mlmodelc/coremldata.bin")
-    let chunk2 = directory.appendingPathComponent("chunk2_3way.mlmodelc/coremldata.bin")
-    let chunk3 = directory.appendingPathComponent("chunk3_3way.mlmodelc/coremldata.bin")
-    let model = directory.appendingPathComponent("model.mlmodelc")
-    let package = directory.appendingPathComponent("model.mlpackage")
-    let tokenizer = directory.appendingPathComponent("hf_model")
-    let hasChunkedModel = FileManager.default.fileExists(atPath: chunk1.path)
-      && FileManager.default.fileExists(atPath: chunk2.path)
-      && FileManager.default.fileExists(atPath: chunk3.path)
-    let hasModel = hasChunkedModel
-      || FileManager.default.fileExists(atPath: model.path)
-      || FileManager.default.fileExists(atPath: package.path)
-    return hasModel && FileManager.default.fileExists(atPath: tokenizer.path)
+    let requiredRelativePaths = [
+      "model_config.json",
+      "hf_model/config.json",
+      "hf_model/tokenizer.json",
+      "hf_model/tokenizer_config.json",
+      "chunk1.mlmodelc/coremldata.bin",
+      "chunk2_3way.mlmodelc/coremldata.bin",
+      "chunk3_3way.mlmodelc/coremldata.bin",
+      "embed_tokens_q8.bin",
+      "embed_tokens_scales.bin",
+      "embed_tokens_per_layer_q8.bin",
+      "embed_tokens_per_layer_scales.bin",
+      "per_layer_projection.bin",
+      "per_layer_norm_weight.bin",
+      "cos_sliding.npy",
+      "sin_sliding.npy",
+      "cos_full.npy",
+      "sin_full.npy"
+    ]
+
+    for relativePath in requiredRelativePaths {
+      let file = directory.appendingPathComponent(relativePath)
+      guard FileManager.default.fileExists(atPath: file.path) else {
+        NSLog("[CoreMLLLM] missing required local model file %@", relativePath)
+        return false
+      }
+    }
+    return true
   }
 }

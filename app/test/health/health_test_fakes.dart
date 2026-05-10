@@ -11,6 +11,7 @@ final class FakeHealthDataGateway implements HealthDataGateway {
       <Set<HealthMetricType>>[];
   final List<DateTime> aggregateStarts = <DateTime>[];
   final List<DateTime> aggregateEnds = <DateTime>[];
+  final List<String> aggregateReadModes = <String>[];
   Set<HealthMetricType>? readMetricTypes;
   DateTime? readStart;
   DateTime? readEnd;
@@ -40,10 +41,12 @@ final class FakeHealthDataGateway implements HealthDataGateway {
     required Set<HealthMetricType> metricTypes,
     required DateTime start,
     required DateTime end,
+    String readMode = 'aggregate',
   }) async {
     aggregateRequests.add(metricTypes);
     aggregateStarts.add(start);
     aggregateEnds.add(end);
+    aggregateReadModes.add(readMode);
     readMetricTypes = metricTypes;
     readStart = start;
     readEnd = end;

@@ -9,6 +9,7 @@ final class HealthDataAggregate {
     this.average,
     this.min,
     this.max,
+    this.sampleEndTime,
   });
 
   final HealthMetricType type;
@@ -18,6 +19,7 @@ final class HealthDataAggregate {
   final double? average;
   final double? min;
   final double? max;
+  final DateTime? sampleEndTime;
 }
 
 abstract interface class HealthDataGateway {
@@ -31,6 +33,7 @@ abstract interface class HealthDataGateway {
     required Set<HealthMetricType> metricTypes,
     required DateTime start,
     required DateTime end,
+    String readMode = 'aggregate',
   });
 }
 
@@ -57,6 +60,7 @@ final class UnavailableHealthDataGateway implements HealthDataGateway {
     required Set<HealthMetricType> metricTypes,
     required DateTime start,
     required DateTime end,
+    String readMode = 'aggregate',
   }) async {
     throw UnsupportedError(message);
   }

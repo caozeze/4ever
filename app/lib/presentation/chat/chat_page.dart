@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,8 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../application/ai/demo_chat_controller.dart';
 import '../../application/ai/generation_budget_policy.dart';
 import '../../core/providers/model_management_providers.dart';
-import '../../domain/ai/model_install_progress.dart';
-import '../../domain/ai/model_install_status.dart';
 import '../app_navigation_drawer.dart';
 
 class ChatPage extends ConsumerStatefulWidget {
@@ -25,13 +21,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   final ScrollController _scrollController = ScrollController();
   final List<_ChatMessage> _messages = <_ChatMessage>[];
 
-  ModelInstallStatus _status = ModelInstallStatus.notInstalled;
-  var _isPreparing = false;
   var _isGenerating = false;
-  String? _statusMessage;
   String? _errorMessage;
-
-  bool get _isReady => _status == ModelInstallStatus.ready;
 
   @override
   void initState() {
@@ -42,9 +33,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         text: 'Ask me a wellbeing question. I will answer with local Gemma 4.',
       ),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_prepareModel());
-    });
   }
 
   @override
@@ -54,51 +42,15 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     super.dispose();
   }
 
-  Future<void> _prepareModel() async {
-    if (_isPreparing || _isReady) {
-      return;
-    }
-
-    setState(() {
-      _isPreparing = true;
-      _statusMessage = 'Preparing local Gemma 4...';
-      _errorMessage = null;
-    });
-
-    try {
-      final controller = await ref.read(demoChatControllerProvider.future);
-      await for (final progress in controller.prepareModel()) {
-        if (!mounted) {
-          return;
-        }
-        _applyProgress(progress);
-      }
-    } on Object catch (error) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _status = ModelInstallStatus.failed;
-        _errorMessage = error.toString();
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isPreparing = false;
-        });
-      }
-    }
-  }
-
   Future<void> _askGemma() async {
     final prompt = _promptController.text.trim();
-    if (prompt.isEmpty || !_isReady || _isGenerating) {
+    final connection = ref.read(modelConnectionControllerProvider);
+    if (prompt.isEmpty || !connection.snapshot.isReady || _isGenerating) {
       return;
     }
 
     setState(() {
       _isGenerating = true;
-      _statusMessage = null;
       _errorMessage = null;
       _messages.add(_ChatMessage(role: _ChatRole.user, text: prompt));
       _promptController.clear();
@@ -136,22 +88,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
   }
 
-  void _applyProgress(ModelInstallProgress progress) {
-    setState(() {
-      _status = progress.status;
-      if (progress.status == ModelInstallStatus.failed) {
-        _errorMessage = progress.message;
-        _statusMessage = null;
-      } else {
-        _statusMessage = progress.message;
-        _errorMessage = null;
-      }
-      if (progress.status == ModelInstallStatus.ready) {
-        _statusMessage = null;
-      }
-    });
-  }
-
   void _scrollToLatestMessage() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) {
@@ -167,7 +103,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   @override
   Widget build(BuildContext context) {
-    final canSend = _isReady && !_isGenerating;
+    final connection = ref.watch(modelConnectionControllerProvider).snapshot;
+    final canSend = connection.isReady && !_isGenerating;
+    final connectionMessage = connection.isConnecting
+        ? connection.message ?? 'Connecting local Gemma...'
+        : null;
+    final errorMessage =
+        _errorMessage ?? (connection.isFailed ? connection.message : null);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Gemma Health Coach')),
@@ -186,14 +128,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 },
               ),
             ),
-            if (_statusMessage != null || _isPreparing || _errorMessage != null)
+            if (connectionMessage != null || errorMessage != null)
               _ChatStatusBar(
-                statusMessage: _isPreparing
-                    ? 'Preparing local Gemma 4...'
-                    : _statusMessage,
-                errorMessage: _errorMessage,
-                onRetry: _status == ModelInstallStatus.failed
-                    ? _prepareModel
+                statusMessage: connectionMessage,
+                errorMessage: errorMessage,
+                onRetry: connection.isFailed
+                    ? () => ref
+                          .read(modelConnectionControllerProvider)
+                          .retry()
                     : null,
               ),
             Padding(

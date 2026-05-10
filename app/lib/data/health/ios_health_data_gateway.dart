@@ -27,11 +27,13 @@ final class IosHealthDataGateway implements HealthDataGateway {
     required Set<HealthMetricType> metricTypes,
     required DateTime start,
     required DateTime end,
+    String readMode = 'aggregate',
   }) async {
     final rawAggregates = await _api.readAggregates(
       metricTypes: _wireNames(metricTypes),
       startTime: start,
       endTime: end,
+      readMode: readMode,
     );
     return rawAggregates
         .map(_mapNativeAggregate)
@@ -64,12 +66,20 @@ final class IosHealthDataGateway implements HealthDataGateway {
       average: _asDouble(raw['average']),
       min: _asDouble(raw['min']),
       max: _asDouble(raw['max']),
+      sampleEndTime: _asDateTime(raw['sample_end_time_millis']),
     );
   }
 
   static double? _asDouble(Object? value) {
     if (value is num) {
       return value.toDouble();
+    }
+    return null;
+  }
+
+  static DateTime? _asDateTime(Object? value) {
+    if (value is num) {
+      return DateTime.fromMillisecondsSinceEpoch(value.round());
     }
     return null;
   }

@@ -23,6 +23,7 @@ final class HealthSummaryService {
 
   static const String periodToday = 'today';
   static const String periodLast24h = 'last24h';
+  static const String periodLatest = 'latest';
 
   final HealthDataGateway _gateway;
   final AgentTraceSink _traceSink;
@@ -33,16 +34,21 @@ final class HealthSummaryService {
     DateTime? now,
   }) async {
     final metricTypes = _parseMetrics(metrics);
-    if (!_isSupportedPeriod(period) || metricTypes == null) {
+    if (!_isSupportedPeriod(period) ||
+        metricTypes == null ||
+        !_supportsPeriod(period: period, metrics: metricTypes)) {
       return _finish(
         status: statusInvalidRequest,
         reason: reasonInvalidRequest,
         period: period,
         metricNames: metrics,
+        start: null,
+        end: null,
       );
     }
 
     final metricNames = _wireNames(metricTypes);
+    final range = _rangeFor(period: period, now: now ?? DateTime.now());
     _traceSink.record(
       AgentTraceEvent(
         event: 'health_summary_read_start',
@@ -58,16 +64,18 @@ final class HealthSummaryService {
         reason: reasonHealthKitUnavailable,
         period: period,
         metricNames: metricNames,
+        start: range.start,
+        end: range.end,
       );
     }
 
-    final range = _rangeFor(period: period, now: now ?? DateTime.now());
     final List<HealthDataAggregate> aggregates;
     try {
       aggregates = await _gateway.readAggregates(
         metricTypes: metricTypes,
         start: range.start,
         end: range.end,
+        readMode: period == periodLatest ? 'latest' : 'aggregate',
       );
     } on Object {
       return _finish(
@@ -75,6 +83,8 @@ final class HealthSummaryService {
         reason: reasonReadFailed,
         period: period,
         metricNames: metricNames,
+        start: range.start,
+        end: range.end,
       );
     }
 
@@ -92,13 +102,22 @@ final class HealthSummaryService {
         period: period,
         metricNames: metricNames,
         requestedMetrics: metricNames,
+        start: range.start,
+        end: range.end,
       );
     }
+    final missingMetrics = metricNames
+        .where((metricName) => !metricsJson.containsKey(metricName))
+        .toList(growable: false);
     return _finish(
       status: statusOk,
       period: period,
       metricNames: metricNames,
+      requestedMetrics: metricNames,
+      missingMetrics: missingMetrics,
       metrics: metricsJson,
+      start: range.start,
+      end: range.end,
     );
   }
 
@@ -118,7 +137,30 @@ final class HealthSummaryService {
   }
 
   bool _isSupportedPeriod(String period) {
-    return period == periodToday || period == periodLast24h;
+    return period == periodToday ||
+        period == periodLast24h ||
+        period == periodLatest;
+  }
+
+  bool _supportsPeriod({
+    required String period,
+    required Set<HealthMetricType> metrics,
+  }) {
+    if (period != periodLatest) {
+      return true;
+    }
+    return metrics.every(_supportsLatest);
+  }
+
+  bool _supportsLatest(HealthMetricType metric) {
+    return switch (metric) {
+      HealthMetricType.heartRate ||
+      HealthMetricType.restingHeartRate ||
+      HealthMetricType.walkingHeartRateAverage ||
+      HealthMetricType.hrv ||
+      HealthMetricType.weight => true,
+      _ => false,
+    };
   }
 
   ({DateTime start, DateTime end}) _rangeFor({
@@ -131,6 +173,7 @@ final class HealthSummaryService {
         start: now.subtract(const Duration(hours: 24)),
         end: now,
       ),
+      periodLatest => (start: DateTime.fromMillisecondsSinceEpoch(0), end: now),
       _ => throw ArgumentError.value(period, 'period'),
     };
   }
@@ -142,11 +185,16 @@ final class HealthSummaryService {
     final metric = aggregate.type;
     if (metric.isAverageMetric) {
       return <String, Object?>{
+        if (aggregate.value != null) 'value': _roundOne(aggregate.value!),
         if (aggregate.average != null) 'average': _roundOne(aggregate.average!),
         if (aggregate.min != null) 'min': _roundOne(aggregate.min!),
         if (aggregate.max != null) 'max': _roundOne(aggregate.max!),
         'unit': aggregate.unit,
         'sample_count': aggregate.sampleCount,
+        if (aggregate.sampleEndTime != null)
+          'as_of': aggregate.sampleEndTime!.toIso8601String(),
+        if (aggregate.sampleEndTime != null)
+          'sample_end_time': aggregate.sampleEndTime!.toIso8601String(),
       };
     }
     return <String, Object?>{
@@ -156,6 +204,10 @@ final class HealthSummaryService {
             : _roundOne(aggregate.value!),
       'unit': aggregate.unit,
       'sample_count': aggregate.sampleCount,
+      if (aggregate.sampleEndTime != null)
+        'as_of': aggregate.sampleEndTime!.toIso8601String(),
+      if (aggregate.sampleEndTime != null)
+        'sample_end_time': aggregate.sampleEndTime!.toIso8601String(),
     };
   }
 
@@ -166,13 +218,18 @@ final class HealthSummaryService {
     String? reason,
     Map<String, Object?> metrics = const <String, Object?>{},
     List<String>? requestedMetrics,
+    List<String> missingMetrics = const <String>[],
+    DateTime? start,
+    DateTime? end,
   }) {
     final result = <String, Object?>{
       'status': status,
       if (reason case final String reason) 'reason': reason,
-      if (requestedMetrics case final List<String> requestedMetrics)
-        'requested_metrics': requestedMetrics,
       'period': period,
+      'requested_metrics': requestedMetrics ?? metricNames,
+      if (missingMetrics.isNotEmpty) 'missing_metrics': missingMetrics,
+      if (start != null) 'start_time': start.toIso8601String(),
+      if (end != null) 'end_time': end.toIso8601String(),
       'metrics': metrics,
     };
     _traceSink.record(

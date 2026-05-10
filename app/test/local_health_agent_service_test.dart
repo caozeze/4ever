@@ -43,14 +43,17 @@ void main() {
       expect(runtime.generatedPrompts, hasLength(1));
       expect(
         runtime.generatedPrompts.single,
-        contains('Tool result from get_health_summary:'),
+        contains('Structured local health agent input:'),
       );
+      expect(runtime.generatedPrompts.single, contains('"agent_plan"'));
+      expect(runtime.generatedPrompts.single, contains('"tool_results"'));
       expect(runtime.generatedPrompts.single, contains('"activeEnergy"'));
       expect(runtime.generatedPrompts.single, contains('"value":320.5'));
       expect(runtime.generatedPrompts.single, contains('"sample_count":2'));
       expect(gateway.requestedPermissions, isNull);
       expect(traceSink.eventNames, <String>[
         'agent_start',
+        'agent_plan',
         'agent_model_tool_call',
         'health_summary_read_start',
         'health_summary_read_finish',
@@ -102,54 +105,19 @@ void main() {
     },
   );
 
-  test('runs steps tool call and traces health summary status', () async {
+  test('routes current heart rate questions to latest summary', () async {
     final runtime = RecordingLlmRuntime()
-      ..responseTexts.addAll(<String>['You walked 1234 steps today.']);
+      ..responseTexts.addAll(<String>[
+        'Apple Health latest visible heart rate is 72 bpm.',
+      ]);
     final gateway = FakeHealthDataGateway()
-      ..aggregates = const <HealthDataAggregate>[
+      ..aggregates = <HealthDataAggregate>[
         HealthDataAggregate(
-          type: HealthMetricType.steps,
-          unit: 'count',
+          type: HealthMetricType.heartRate,
+          unit: 'bpm',
           sampleCount: 1,
-          value: 1234,
-        ),
-      ];
-    final traceSink = RecordingAgentTraceSink();
-    final service = DartanticLocalHealthAgentService(
-      runtime: runtime,
-      healthSummaryService: HealthSummaryService(
-        gateway: gateway,
-        traceSink: traceSink,
-      ),
-      traceSink: traceSink,
-    );
-
-    final answer = await service.ask(
-      prompt: '我今天走了多少步？',
-      config: const LlmGenerationConfig(maxTokens: 128),
-    );
-
-    expect(answer, contains('1234 steps'));
-    expect(runtime.generatedPrompts.single, contains('"steps"'));
-    expect(runtime.generatedPrompts.single, contains('"value":1234'));
-    final toolResult = traceSink.events.singleWhere(
-      (event) => event.event == 'agent_tool_result',
-    );
-    expect(toolResult.status, HealthSummaryService.statusOk);
-    expect(toolResult.metricNames, <String>['steps']);
-    expect(toolResult.sampleCount, 1);
-  });
-
-  test('routes sleep questions to last24h summary', () async {
-    final runtime = RecordingLlmRuntime()
-      ..responseTexts.add('You slept 6.5 hours recently.');
-    final gateway = FakeHealthDataGateway()
-      ..aggregates = const <HealthDataAggregate>[
-        HealthDataAggregate(
-          type: HealthMetricType.sleepSession,
-          unit: 'hour',
-          sampleCount: 3,
-          value: 6.5,
+          value: 72,
+          sampleEndTime: DateTime(2026, 5, 10, 15, 25),
         ),
       ];
     final service = DartanticLocalHealthAgentService(
@@ -158,12 +126,57 @@ void main() {
     );
 
     await service.ask(
-      prompt: '我昨晚睡了多久？',
+      prompt: '我现在心率多少？',
       config: const LlmGenerationConfig(maxTokens: 128),
     );
 
-    expect(runtime.generatedPrompts.single, contains('"period":"last24h"'));
-    expect(runtime.generatedPrompts.single, contains('"sleepSession"'));
-    expect(runtime.generatedPrompts.single, contains('"value":6.5'));
+    expect(gateway.aggregateReadModes, <String>['latest']);
+    expect(runtime.generatedPrompts.single, contains('"period":"latest"'));
+    expect(runtime.generatedPrompts.single, contains('"heartRate"'));
+    expect(runtime.generatedPrompts.single, contains('"as_of"'));
+  });
+
+  test('routes current state advice to overview action groups', () async {
+    final runtime = RecordingLlmRuntime()
+      ..responseTexts.addAll(<String>['Here is a local wellbeing summary.']);
+    final gateway = FakeHealthDataGateway()
+      ..aggregates = const <HealthDataAggregate>[
+        HealthDataAggregate(
+          type: HealthMetricType.steps,
+          unit: 'count',
+          sampleCount: 1,
+          value: 3000,
+        ),
+        HealthDataAggregate(
+          type: HealthMetricType.heartRate,
+          unit: 'bpm',
+          sampleCount: 1,
+          value: 70,
+        ),
+      ];
+    final service = DartanticLocalHealthAgentService(
+      runtime: runtime,
+      healthSummaryService: HealthSummaryService(gateway: gateway),
+    );
+
+    await service.ask(
+      prompt: '根据我当前的状态，你看看有什么建议',
+      config: const LlmGenerationConfig(maxTokens: 128),
+    );
+
+    expect(gateway.aggregateReadModes, <String>[
+      'aggregate',
+      'aggregate',
+      'latest',
+    ]);
+    expect(runtime.generatedPrompts.single, contains('"overallAdvice"'));
+    expect(
+      runtime.generatedPrompts.single,
+      contains('"today_activity_overview"'),
+    );
+    expect(
+      runtime.generatedPrompts.single,
+      contains('"latest_vitals_overview"'),
+    );
   });
 }
