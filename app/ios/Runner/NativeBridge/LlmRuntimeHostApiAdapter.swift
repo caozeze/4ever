@@ -1,11 +1,14 @@
 import Flutter
 import Foundation
+import Darwin
 import CoreML
 import CoreMLLLM
 
 final class LlmRuntimeHostApiAdapter: NSObject {
   private var llm: CoreMLLLM?
   private var loadedModelId: String?
+  private var loadedComputeUnitsDescription: String?
+  private var loadedPerformanceFlagsDescription: String?
   private var state = "unloaded"
   private var lastErrorCode: String?
   private var lastErrorMessage: String?
@@ -59,6 +62,8 @@ final class LlmRuntimeHostApiAdapter: NSObject {
       activeGenerationId = nil
       llm = nil
       loadedModelId = nil
+      loadedComputeUnitsDescription = nil
+      loadedPerformanceFlagsDescription = nil
       state = "unloaded"
       result(nil)
     default:
@@ -100,7 +105,9 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     let initializationId = UUID()
     activeInitializationId = initializationId
     activeInitializationResult = result
-    NSLog("[CoreMLLLM] event=model_initialize_start model_id=%@", modelId)
+    applyDefaultPerformanceEnvironment()
+    let initializationStartedAt = Date()
+    NSLog("[CoreMLLLM] event=model_initialize_start model_id=%@ perfFlags=%@", modelId, performanceFlagsDescription())
 
     initializationTask = Task { [weak self] in
       let loadTask = Task<CoreMLLLM, Error> { [weak self] in
@@ -112,7 +119,9 @@ final class LlmRuntimeHostApiAdapter: NSObject {
           localPath: localPath
         )
         let computeUnits = self.selectedComputeUnits()
-        NSLog("[CoreMLLLM] initialize modelId=%@ path=%@ computeUnits=%@", modelId, directory.path, String(describing: computeUnits))
+        let computeUnitsDescription = String(describing: computeUnits)
+        let performanceFlagsDescription = self.performanceFlagsDescription()
+        NSLog("[CoreMLLLM] initialize modelId=%@ path=%@ computeUnits=%@ perfFlags=%@", modelId, directory.path, computeUnitsDescription, performanceFlagsDescription)
         let loaded = try await CoreMLLLM.load(from: directory, computeUnits: computeUnits) { status in
           NSLog("[CoreMLLLM] %@", status)
         }
@@ -121,6 +130,10 @@ final class LlmRuntimeHostApiAdapter: NSObject {
         loaded.crossVocabEnabled = false
         loaded.lookaheadEnabled = false
         NSLog("[CoreMLLLM] speculative paths disabled for MVP serial decode")
+        DispatchQueue.main.async { [weak self] in
+          self?.loadedComputeUnitsDescription = computeUnitsDescription
+          self?.loadedPerformanceFlagsDescription = performanceFlagsDescription
+        }
         return loaded
       }
       let timeoutTask = Task { [weak self] in
@@ -135,10 +148,13 @@ final class LlmRuntimeHostApiAdapter: NSObject {
           }
           self.llm = nil
           self.loadedModelId = nil
+          self.loadedComputeUnitsDescription = nil
+          self.loadedPerformanceFlagsDescription = nil
           self.state = "failed"
           self.lastErrorCode = NativeErrorCode.modelLoadFailed.rawValue
           self.lastErrorMessage = "Model initialization timed out."
-          NSLog("[CoreMLLLM] event=model_initialize_timeout model_id=%@ error_code=%@", modelId, NativeErrorCode.modelLoadFailed.rawValue)
+          let elapsed = Date().timeIntervalSince(initializationStartedAt)
+          NSLog("[CoreMLLLM] event=model_initialize_timeout model_id=%@ elapsedSeconds=%.3f error_code=%@", modelId, elapsed, NativeErrorCode.modelLoadFailed.rawValue)
           self.completeInitialization(
             initializationId,
             result: result,
@@ -156,7 +172,8 @@ final class LlmRuntimeHostApiAdapter: NSObject {
           self.llm = loaded
           self.loadedModelId = modelId
           self.state = "ready"
-          NSLog("[CoreMLLLM] event=model_initialize_ready model_id=%@", modelId)
+          let elapsed = Date().timeIntervalSince(initializationStartedAt)
+          NSLog("[CoreMLLLM] event=model_initialize_ready model_id=%@ elapsedSeconds=%.3f computeUnits=%@ perfFlags=%@", modelId, elapsed, self.loadedComputeUnitsDescription ?? "unknown", self.loadedPerformanceFlagsDescription ?? "unknown")
           self.completeInitialization(initializationId, result: result, payload: nil)
         }
       } catch is CancellationError {
@@ -168,7 +185,8 @@ final class LlmRuntimeHostApiAdapter: NSObject {
           self.state = "failed"
           self.lastErrorCode = NativeErrorCode.modelLoadFailed.rawValue
           self.lastErrorMessage = "Model initialization was cancelled."
-          NSLog("[CoreMLLLM] event=model_initialize_failed model_id=%@ error_code=%@", modelId, NativeErrorCode.modelLoadFailed.rawValue)
+          let elapsed = Date().timeIntervalSince(initializationStartedAt)
+          NSLog("[CoreMLLLM] event=model_initialize_failed model_id=%@ elapsedSeconds=%.3f error_code=%@", modelId, elapsed, NativeErrorCode.modelLoadFailed.rawValue)
           self.completeInitialization(
             initializationId,
             result: result,
@@ -183,10 +201,13 @@ final class LlmRuntimeHostApiAdapter: NSObject {
           }
           self.llm = nil
           self.loadedModelId = nil
+          self.loadedComputeUnitsDescription = nil
+          self.loadedPerformanceFlagsDescription = nil
           self.state = "failed"
           self.lastErrorCode = NativeErrorCode.modelLoadFailed.rawValue
           self.lastErrorMessage = String(describing: error)
-          NSLog("[CoreMLLLM] event=model_initialize_failed model_id=%@ error_code=%@", modelId, NativeErrorCode.modelLoadFailed.rawValue)
+          let elapsed = Date().timeIntervalSince(initializationStartedAt)
+          NSLog("[CoreMLLLM] event=model_initialize_failed model_id=%@ elapsedSeconds=%.3f error_code=%@", modelId, elapsed, NativeErrorCode.modelLoadFailed.rawValue)
           self.completeInitialization(
             initializationId,
             result: result,
@@ -215,6 +236,7 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     generationTask?.cancel()
     let generationId = UUID()
     activeGenerationId = generationId
+    let generationStartedAt = Date()
     generationTask = Task { [weak self] in
       let decodeTask = Task<String, Error> {
         return try await llm.generate(prompt, maxTokens: maxTokens)
@@ -228,10 +250,12 @@ final class LlmRuntimeHostApiAdapter: NSObject {
         NSLog("[CoreMLLLM] generateOnce timeout reached; cancelling decode")
       }
       do {
-        NSLog("[CoreMLLLM] generateOnce modelId=%@ promptLength=%ld maxTokens=%ld", modelId, prompt.count, maxTokens)
+        NSLog("[CoreMLLLM] generateOnce modelId=%@ promptLength=%ld maxTokens=%ld computeUnits=%@ perfFlags=%@", modelId, prompt.count, maxTokens, self?.loadedComputeUnitsDescription ?? "unknown", self?.loadedPerformanceFlagsDescription ?? "unknown")
         let text = try await decodeTask.value
         timeoutTask.cancel()
         let wasCancelled = Task.isCancelled
+        let elapsed = Date().timeIntervalSince(generationStartedAt)
+        let tokensPerSecond = llm.tokensPerSecond
         DispatchQueue.main.async {
           guard !wasCancelled else {
             self?.completeGeneration(
@@ -241,7 +265,7 @@ final class LlmRuntimeHostApiAdapter: NSObject {
             )
             return
           }
-          NSLog("[CoreMLLLM] generateOnce outputLength=%ld", text.count)
+          NSLog("[CoreMLLLM] generateOnce outputLength=%ld elapsedSeconds=%.3f tokensPerSecond=%.2f computeUnits=%@ perfFlags=%@", text.count, elapsed, tokensPerSecond, self?.loadedComputeUnitsDescription ?? "unknown", self?.loadedPerformanceFlagsDescription ?? "unknown")
           guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             self?.lastErrorCode = NativeErrorCode.generationEmptyOutput.rawValue
             self?.lastErrorMessage = "CoreML-LLM returned empty output."
@@ -314,6 +338,30 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     ]
   }
 
+  private func performanceFlagsDescription() -> String {
+    let environment = ProcessInfo.processInfo.environment
+    let keys = [
+      "GEMMA_MVP_COMPUTE_UNITS",
+      "LLM_COMPUTE_UNITS",
+      "LLM_PREFIX_CACHE",
+      "LLM_FAST_PREDICTION",
+      "GPU_PREFILL",
+      "SPECULATIVE_PROFILE",
+      "LLM_LOOKAHEAD_ENABLE"
+    ]
+    return keys
+      .map { key in "\(key)=\(environment[key] ?? "unset")" }
+      .joined(separator: " ")
+  }
+
+  private func applyDefaultPerformanceEnvironment() {
+    let environment = ProcessInfo.processInfo.environment
+    if environment["LLM_PREFIX_CACHE"] == nil {
+      setenv("LLM_PREFIX_CACHE", "1", 1)
+      NSLog("[CoreMLLLM] LLM_PREFIX_CACHE unset; defaulting to 1")
+    }
+  }
+
   private func resolveModelDirectory(modelId: String, localPath: String) async throws -> URL {
     let localDirectory = URL(fileURLWithPath: localPath, isDirectory: true)
     if isCoreMlBundleReady(at: localDirectory) {
@@ -336,16 +384,23 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     switch value {
     case "cpu", "cpuonly":
       return .cpuOnly
-    case "gpu":
-      NSLog("[CoreMLLLM] GEMMA_MVP_COMPUTE_UNITS=gpu is not a supported CoreML mode for this bundle; using cpuAndNeuralEngine")
-      return .cpuAndNeuralEngine
+    case "gpu", "cpugpu":
+      NSLog("[CoreMLLLM] GEMMA_MVP_COMPUTE_UNITS=%@ maps to cpuAndGPU; experimental only and may be unstable", value ?? "gpu")
+      return .cpuAndGPU
     case "cpuandgpu":
+      NSLog("[CoreMLLLM] GEMMA_MVP_COMPUTE_UNITS=cpuandgpu is experimental only and may be unstable")
       return .cpuAndGPU
     case "all":
+      NSLog("[CoreMLLLM] GEMMA_MVP_COMPUTE_UNITS=all uses Core ML scheduler; not GPU-only")
       return .all
     case "cpuane", "cpuandneuralengine":
       return .cpuAndNeuralEngine
     default:
+      if let value {
+        NSLog("[CoreMLLLM] GEMMA_MVP_COMPUTE_UNITS=%@ is unknown; using cpuAndNeuralEngine", value)
+      } else {
+        NSLog("[CoreMLLLM] GEMMA_MVP_COMPUTE_UNITS unset; using cpuAndNeuralEngine")
+      }
       return .cpuAndNeuralEngine
     }
   }

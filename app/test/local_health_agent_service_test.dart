@@ -41,15 +41,18 @@ void main() {
 
       expect(answer, contains('320.5 kcal'));
       expect(runtime.generatedPrompts, hasLength(1));
+      final generatedPrompt = runtime.generatedPrompts.single;
+      expect(generatedPrompt, contains('Health data:'));
       expect(
-        runtime.generatedPrompts.single,
-        contains('Structured local health agent input:'),
+        generatedPrompt,
+        isNot(contains('Structured local health agent input:')),
       );
-      expect(runtime.generatedPrompts.single, contains('"agent_plan"'));
-      expect(runtime.generatedPrompts.single, contains('"tool_results"'));
-      expect(runtime.generatedPrompts.single, contains('"activeEnergy"'));
-      expect(runtime.generatedPrompts.single, contains('"value":320.5'));
-      expect(runtime.generatedPrompts.single, contains('"sample_count":2'));
+      expect(generatedPrompt, isNot(contains('"agent_plan"')));
+      expect(generatedPrompt, isNot(contains('"tool_results"')));
+      expect(generatedPrompt, contains('"metric":"activeEnergy"'));
+      expect(generatedPrompt, contains('"value":320.5'));
+      expect(generatedPrompt, isNot(contains('"sample_count":2')));
+      expect(generatedPrompt.length, lessThan(800));
       expect(gateway.requestedPermissions, isNull);
       expect(traceSink.eventNames, <String>[
         'agent_start',
@@ -97,7 +100,10 @@ void main() {
         runtime.generatedPrompts.single,
         contains('"reason":"permission_or_no_visible_data"'),
       );
-      expect(runtime.generatedPrompts.single, contains('"requested_metrics"'));
+      expect(
+        runtime.generatedPrompts.single,
+        isNot(contains('"requested_metrics"')),
+      );
       final finishEvent = traceSink.events.singleWhere(
         (event) => event.event == 'health_summary_read_finish',
       );
@@ -132,7 +138,7 @@ void main() {
 
     expect(gateway.aggregateReadModes, <String>['latest']);
     expect(runtime.generatedPrompts.single, contains('"period":"latest"'));
-    expect(runtime.generatedPrompts.single, contains('"heartRate"'));
+    expect(runtime.generatedPrompts.single, contains('"metric":"heartRate"'));
     expect(runtime.generatedPrompts.single, contains('"as_of"'));
   });
 
@@ -169,14 +175,38 @@ void main() {
       'aggregate',
       'latest',
     ]);
-    expect(runtime.generatedPrompts.single, contains('"overallAdvice"'));
+    expect(runtime.generatedPrompts.single, isNot(contains('"overallAdvice"')));
     expect(
       runtime.generatedPrompts.single,
-      contains('"today_activity_overview"'),
+      isNot(contains('"today_activity_overview"')),
     );
+    expect(runtime.generatedPrompts.single, contains('"metric":"steps"'));
+    expect(runtime.generatedPrompts.single, contains('"metric":"heartRate"'));
+  });
+
+  test('general chat uses a short direct prompt without tool schema', () async {
+    final runtime = RecordingLlmRuntime()
+      ..responseTexts.addAll(<String>['Try taking a short walk.']);
+    final service = DartanticLocalHealthAgentService(
+      runtime: runtime,
+      healthSummaryService: HealthSummaryService(
+        gateway: FakeHealthDataGateway(),
+      ),
+    );
+
+    final answer = await service.ask(
+      prompt: '今天心情一般怎么办？',
+      config: const LlmGenerationConfig(maxTokens: 128),
+    );
+
+    expect(answer, contains('short walk'));
+    expect(runtime.generatedPrompts.single, contains('User:'));
+    expect(runtime.generatedPrompts.single, contains('Answer:'));
+    expect(runtime.generatedPrompts.single, isNot(contains('tool_call')));
     expect(
       runtime.generatedPrompts.single,
-      contains('"latest_vitals_overview"'),
+      isNot(contains('get_health_summary')),
     );
+    expect(runtime.generatedPrompts.single.length, lessThan(180));
   });
 }
