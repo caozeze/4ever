@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/health/health_authorization_service.dart';
+import '../../application/health/health_summary_service.dart';
 import '../../core/providers/health_providers.dart';
 import '../../domain/health/health_metric_type.dart';
 import '../app_navigation_drawer.dart';
@@ -277,9 +278,10 @@ class _MetricStatusTile extends StatelessWidget {
     final theme = Theme.of(context);
     final readable =
         result?.status == HealthMetricAuthorizationResult.statusReadable;
-    final unavailable = result?.status == HealthSummaryStatus.unavailable;
+    final unavailable =
+        result?.status == HealthSummaryService.statusUnavailable;
     final permissionDenied =
-        result?.status == HealthSummaryStatus.permissionDenied;
+        result?.status == HealthSummaryService.statusPermissionDenied;
     final color = readable
         ? theme.colorScheme.primary
         : unavailable || permissionDenied
@@ -306,10 +308,10 @@ class _MetricStatusTile extends StatelessWidget {
     if (result.status == HealthMetricAuthorizationResult.statusReadable) {
       return 'Readable${_summaryText()}';
     }
-    if (result.status == HealthSummaryStatus.unavailable) {
+    if (result.status == HealthSummaryService.statusUnavailable) {
       return 'Unavailable';
     }
-    if (result.status == HealthSummaryStatus.permissionDenied) {
+    if (result.status == HealthSummaryService.statusPermissionDenied) {
       return 'Request failed or was not completed.';
     }
     return 'No visible data. Confirm this Health permission toggle and that Health has data for the period.';
@@ -331,11 +333,6 @@ class _MetricStatusTile extends StatelessWidget {
     }
     return ' - $amount $unit, sample count $sampleCount';
   }
-}
-
-abstract final class HealthSummaryStatus {
-  static const String unavailable = 'unavailable';
-  static const String permissionDenied = 'permission_denied';
 }
 
 extension HealthSummaryMetricLabels on HealthMetricType {
