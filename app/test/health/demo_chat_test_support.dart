@@ -1,4 +1,5 @@
 import 'package:gemma_local/application/ai/demo_chat_controller.dart';
+import 'package:gemma_local/application/ai/local_health_agent_service.dart';
 import 'package:gemma_local/application/ai/model/device_capabilities_reader.dart';
 import 'package:gemma_local/application/ai/model/model_artifact_preparer.dart';
 import 'package:gemma_local/application/ai/model/model_catalog.dart';
@@ -7,7 +8,6 @@ import 'package:gemma_local/application/ai/model/model_lifecycle_service.dart';
 import 'package:gemma_local/application/ai/model/model_registry_store.dart';
 import 'package:gemma_local/application/ai/model/model_selection_service.dart';
 import 'package:gemma_local/application/ai/model/model_storage_paths.dart';
-import 'package:gemma_local/application/health/health_prompt_context_service.dart';
 import 'package:gemma_local/domain/ai/device_capabilities.dart';
 import 'package:gemma_local/domain/ai/llm_generation_config.dart';
 import 'package:gemma_local/domain/ai/llm_model_config.dart';
@@ -21,7 +21,7 @@ import 'package:gemma_local/domain/ai/model_manifest_entry.dart';
 
 DemoChatController testDemoChatController({
   required RecordingLlmRuntime runtime,
-  HealthPromptContextService? healthPromptContextService,
+  LocalHealthAgentService? localHealthAgentService,
 }) {
   return DemoChatController(
     catalog: const _FakeCatalog(),
@@ -37,13 +37,14 @@ DemoChatController testDemoChatController({
       runtime: runtime,
     ),
     runtime: runtime,
-    healthPromptContextService: healthPromptContextService,
+    localHealthAgentService: localHealthAgentService,
   );
 }
 
 final class RecordingLlmRuntime implements LlmRuntime {
   String? initializedModelId = testCoreMlModel.id;
   String responseText = 'The answer is 4.';
+  final List<String> responseTexts = <String>[];
   final List<String> generatedPrompts = <String>[];
   final List<LlmGenerationConfig> generatedConfigs = <LlmGenerationConfig>[];
 
@@ -58,8 +59,11 @@ final class RecordingLlmRuntime implements LlmRuntime {
   }) async {
     generatedPrompts.add(prompt);
     generatedConfigs.add(config);
+    final text = responseTexts.isEmpty
+        ? responseText
+        : responseTexts.removeAt(0);
     return LlmResponse(
-      text: responseText,
+      text: text,
       modelId: initializedModelId ?? 'unloaded',
     );
   }

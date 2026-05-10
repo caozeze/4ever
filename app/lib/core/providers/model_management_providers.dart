@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../application/ai/demo_chat_controller.dart';
+import '../../application/ai/local_health_agent_service.dart';
 import '../../application/ai/model/device_capabilities_reader.dart';
 import '../../application/ai/model/model_artifact_preparer.dart';
 import '../../application/ai/model/model_catalog.dart';
@@ -89,12 +90,17 @@ final modelLifecycleServiceProvider = FutureProvider<ModelLifecycleService>((
 final demoChatControllerProvider = FutureProvider<DemoChatController>((
   Ref ref,
 ) async {
+  final runtime = ref.watch(llmRuntimeProvider);
   return DemoChatController(
     catalog: ref.watch(modelCatalogProvider),
     deviceCapabilitiesReader: ref.watch(deviceCapabilitiesReaderProvider),
     selectionService: ref.watch(modelSelectionServiceProvider),
     lifecycleService: await ref.watch(modelLifecycleServiceProvider.future),
-    runtime: ref.watch(llmRuntimeProvider),
-    healthPromptContextService: ref.watch(healthPromptContextServiceProvider),
+    runtime: runtime,
+    localHealthAgentService: DartanticLocalHealthAgentService(
+      runtime: runtime,
+      healthSummaryService: ref.watch(healthSummaryServiceProvider),
+      traceSink: ref.watch(agentTraceSinkProvider),
+    ),
   );
 });

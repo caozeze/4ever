@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import 'presentation/app_navigation_drawer.dart';
 import 'presentation/chat/chat_page.dart';
+import 'presentation/health/health_permissions_page.dart';
 
 final GoRouter _router = GoRouter(
   initialLocation: '/chat',
@@ -15,6 +16,12 @@ final GoRouter _router = GoRouter(
       path: '/chat',
       builder: (BuildContext context, GoRouterState state) {
         return const ChatPage();
+      },
+    ),
+    GoRoute(
+      path: HealthPermissionsPage.path,
+      builder: (BuildContext context, GoRouterState state) {
+        return const HealthPermissionsPage();
       },
     ),
     GoRoute(

@@ -1,4 +1,4 @@
-enum HealthMetricType { steps, sleepSession, heartRate }
+enum HealthMetricType { steps, sleepSession, heartRate, hrv, activeEnergy }
 
 extension HealthMetricTypeNames on HealthMetricType {
   String get wireName {
@@ -6,6 +6,8 @@ extension HealthMetricTypeNames on HealthMetricType {
       HealthMetricType.steps => 'steps',
       HealthMetricType.sleepSession => 'sleepSession',
       HealthMetricType.heartRate => 'heartRate',
+      HealthMetricType.hrv => 'hrv',
+      HealthMetricType.activeEnergy => 'activeEnergy',
     };
   }
 

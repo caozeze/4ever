@@ -2,9 +2,8 @@ import '../../domain/ai/llm_response.dart';
 import '../../domain/ai/llm_runtime.dart';
 import '../../domain/ai/model_install_progress.dart';
 import '../../domain/ai/model_manifest_entry.dart';
-import '../health/health_prompt_context_service.dart';
 import 'generation_budget_policy.dart';
-import 'local_coach_prompt_builder.dart';
+import 'local_health_agent_service.dart';
 import 'model/device_capabilities_reader.dart';
 import 'model/model_catalog.dart';
 import 'model/model_lifecycle_service.dart';
@@ -17,8 +16,7 @@ class DemoChatController {
     required ModelSelectionService selectionService,
     required ModelLifecycleService lifecycleService,
     required LlmRuntime runtime,
-    HealthPromptContextService? healthPromptContextService,
-    LocalCoachPromptBuilder promptBuilder = const LocalCoachPromptBuilder(),
+    LocalHealthAgentService? localHealthAgentService,
     GenerationBudgetPolicy generationBudgetPolicy =
         const GenerationBudgetPolicy(),
   }) : _catalog = catalog,
@@ -26,8 +24,7 @@ class DemoChatController {
        _selectionService = selectionService,
        _lifecycleService = lifecycleService,
        _runtime = runtime,
-       _healthPromptContextService = healthPromptContextService,
-       _promptBuilder = promptBuilder,
+       _localHealthAgentService = localHealthAgentService,
        _generationBudgetPolicy = generationBudgetPolicy;
 
   static const String defaultPrompt = 'What is the capital of France?';
@@ -39,15 +36,12 @@ class DemoChatController {
   static const String continuationPromptPrefix =
       'Continue the previous answer from exactly where it stopped. '
       'Do not restart.';
-  static const Duration healthPromptContextTimeout = Duration(seconds: 10);
-
   final ModelCatalog _catalog;
   final DeviceCapabilitiesReader _deviceCapabilitiesReader;
   final ModelSelectionService _selectionService;
   final ModelLifecycleService _lifecycleService;
   final LlmRuntime _runtime;
-  final HealthPromptContextService? _healthPromptContextService;
-  final LocalCoachPromptBuilder _promptBuilder;
+  final LocalHealthAgentService? _localHealthAgentService;
   final GenerationBudgetPolicy _generationBudgetPolicy;
 
   Future<ModelManifestEntry> _selectModel({
@@ -86,19 +80,30 @@ class DemoChatController {
       throw StateError('Model is not ready. Prepare the model first.');
     }
 
-    final finalPrompt = await _buildPrompt(normalizedPrompt);
+    final localHealthAgentService = _localHealthAgentService;
+    final budgetPrompt =
+        localHealthAgentService?.budgetPromptFor(normalizedPrompt) ??
+        normalizedPrompt;
     final model = await _selectModel();
     final config = _generationBudgetPolicy.buildConfig(
       model: model,
-      prompt: finalPrompt,
+      prompt: budgetPrompt,
       intent: intent,
       conversationHistoryTokenEstimate: conversationHistoryTokenEstimate,
     );
-    final response = await _runtime.generateOnce(
-      prompt: finalPrompt,
-      config: config,
-    );
-    var text = _usableText(response.text);
+    final firstText = localHealthAgentService == null
+        ? (await _runtime.generateOnce(
+            prompt: normalizedPrompt,
+            config: config,
+          )).text
+        : await localHealthAgentService.ask(
+            prompt: normalizedPrompt,
+            config: config,
+          );
+    if (localHealthAgentService != null && _looksLikeToolCall(firstText)) {
+      throw StateError('Gemma returned an unexecuted tool call.');
+    }
+    var text = _usableText(firstText);
     if (text.isEmpty) {
       final fallbackConfig = _generationBudgetPolicy.buildConfig(
         model: model,
@@ -128,7 +133,7 @@ class DemoChatController {
       continuationCount += 1;
       final continuation = await _runtime.generateOnce(
         prompt: _continuationPrompt(
-          originalPrompt: finalPrompt,
+          originalPrompt: budgetPrompt,
           answerSoFar: text,
         ),
         config: config,
@@ -147,33 +152,17 @@ class DemoChatController {
       text = '$text\n\nResponse may be incomplete.';
     }
 
-    return LlmResponse(text: text, modelId: response.modelId);
-  }
-
-  Future<String> _buildPrompt(String userPrompt) async {
-    final healthPromptContextService = _healthPromptContextService;
-    final healthContext = healthPromptContextService == null
-        ? LocalHealthPromptContext.noData()
-        : await healthPromptContextService
-              .buildForChat()
-              .timeout(
-                healthPromptContextTimeout,
-                onTimeout: () =>
-                    LocalHealthPromptContext.noData('health context timeout'),
-              )
-              .catchError(
-                (_) => LocalHealthPromptContext.noData(
-                  'health context unavailable',
-                ),
-              );
-    return _promptBuilder.build(
-      userMessage: userPrompt,
-      healthContext: healthContext,
-    );
+    return LlmResponse(text: text, modelId: model.id);
   }
 
   String _usableText(String text) {
     return text.replaceAll('<pad>', '').trim();
+  }
+
+  bool _looksLikeToolCall(String text) {
+    final normalized = text.replaceAll('<pad>', '').trim();
+    return normalized.contains('<tool_call>') ||
+        normalized.contains('get_health_summary');
   }
 
   String _continuationPrompt({

@@ -13,6 +13,8 @@ import 'package:gemma_local/application/ai/model/model_lifecycle_service.dart';
 import 'package:gemma_local/application/ai/model/model_registry_store.dart';
 import 'package:gemma_local/application/ai/model/model_selection_service.dart';
 import 'package:gemma_local/application/ai/model/model_storage_paths.dart';
+import 'package:gemma_local/application/health/health_authorization_service.dart';
+import 'package:gemma_local/core/providers/health_providers.dart';
 import 'package:gemma_local/core/providers/model_management_providers.dart';
 import 'package:gemma_local/domain/ai/device_capabilities.dart';
 import 'package:gemma_local/domain/ai/llm_generation_config.dart';
@@ -24,6 +26,7 @@ import 'package:gemma_local/domain/ai/llm_token_event.dart';
 import 'package:gemma_local/domain/ai/model_install_record.dart';
 import 'package:gemma_local/domain/ai/model_manifest.dart';
 import 'package:gemma_local/domain/ai/model_manifest_entry.dart';
+import 'package:gemma_local/domain/health/health_metric_type.dart';
 
 void main() {
   testWidgets('renders simple in-memory chat shell', (
@@ -70,7 +73,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    expect(find.text('Apple Health'), findsNothing);
+    expect(find.text('Apple Health'), findsOneWidget);
     expect(find.text('Diet'), findsOneWidget);
 
     await tester.tap(find.text('Sleep'));
@@ -82,16 +85,51 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets('opens Apple Health page and requests authorization', (
+    WidgetTester tester,
+  ) async {
+    final healthAuthorizationService = _FakeHealthAuthorizationService();
+    await _pumpTestApp(
+      tester,
+      healthAuthorizationService: healthAuthorizationService,
+    );
+
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Apple Health'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Apple Health Access'), findsWidgets);
+    expect(
+      find.byKey(const ValueKey<String>('health_authorize_button')),
+      findsOne,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('health_authorize_button')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(healthAuthorizationService.requestCount, 1);
+    expect(find.textContaining('Request completed'), findsOneWidget);
+  });
 }
 
 Future<void> _pumpTestApp(
   WidgetTester tester, {
   _FakeArtifactPreparer? artifactPreparer,
+  _FakeHealthAuthorizationService? healthAuthorizationService,
   bool settle = true,
 }) async {
   await tester.binding.setSurfaceSize(const Size(800, 1000));
   addTearDown(() => tester.binding.setSurfaceSize(null));
-  await tester.pumpWidget(_testApp(artifactPreparer: artifactPreparer));
+  await tester.pumpWidget(
+    _testApp(
+      artifactPreparer: artifactPreparer,
+      healthAuthorizationService: healthAuthorizationService,
+    ),
+  );
   if (settle) {
     await tester.pumpAndSettle();
   } else {
@@ -100,12 +138,19 @@ Future<void> _pumpTestApp(
   }
 }
 
-Widget _testApp({_FakeArtifactPreparer? artifactPreparer}) {
+Widget _testApp({
+  _FakeArtifactPreparer? artifactPreparer,
+  _FakeHealthAuthorizationService? healthAuthorizationService,
+}) {
   return ProviderScope(
     overrides: [
       demoChatControllerProvider.overrideWith((Ref ref) async {
         return _testDemoChatController(artifactPreparer: artifactPreparer);
       }),
+      if (healthAuthorizationService != null)
+        healthAuthorizationServiceProvider.overrideWithValue(
+          healthAuthorizationService,
+        ),
     ],
     child: const GemmaLocalApp(),
   );
@@ -223,6 +268,65 @@ class _MemoryRegistryStore implements ModelRegistryStore {
   @override
   Future<void> upsert(ModelInstallRecord record) async {
     _records[record.modelId] = record;
+  }
+}
+
+final class _FakeHealthAuthorizationService
+    implements HealthAuthorizationService {
+  int requestCount = 0;
+  final List<HealthMetricType> metricRequests = <HealthMetricType>[];
+  bool openSettingsCalled = false;
+
+  @override
+  Future<HealthAuthorizationResult> requestDefaultReadPermissions() async {
+    requestCount += 1;
+    return const HealthAuthorizationResult(
+      status: HealthAuthorizationResult.statusCompleted,
+      metrics: <HealthMetricAuthorizationResult>[
+        HealthMetricAuthorizationResult(
+          metric: HealthMetricType.steps,
+          status: HealthMetricAuthorizationResult.statusReadable,
+          summary: <String, Object?>{
+            'value': 1234,
+            'unit': 'count',
+            'sample_count': 1,
+          },
+        ),
+        HealthMetricAuthorizationResult(
+          metric: HealthMetricType.sleepSession,
+          status: HealthMetricAuthorizationResult.statusNoVisibleData,
+        ),
+        HealthMetricAuthorizationResult(
+          metric: HealthMetricType.heartRate,
+          status: HealthMetricAuthorizationResult.statusNoVisibleData,
+        ),
+        HealthMetricAuthorizationResult(
+          metric: HealthMetricType.hrv,
+          status: HealthMetricAuthorizationResult.statusNoVisibleData,
+        ),
+        HealthMetricAuthorizationResult(
+          metric: HealthMetricType.activeEnergy,
+          status: HealthMetricAuthorizationResult.statusNoVisibleData,
+        ),
+      ],
+    );
+  }
+
+  @override
+  Future<HealthMetricAuthorizationResult> requestMetricReadPermission(
+    HealthMetricType metric,
+  ) async {
+    metricRequests.add(metric);
+    return HealthMetricAuthorizationResult(
+      metric: metric,
+      status: HealthMetricAuthorizationResult.statusNoVisibleData,
+    );
+  }
+
+  @override
+  Future<bool> openAppSettings() async {
+    openSettingsCalled = true;
+    return true;
   }
 }
 

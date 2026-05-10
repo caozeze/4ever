@@ -18,6 +18,28 @@ final class IosHealthDataGateway implements HealthDataGateway {
   }
 
   @override
+  Future<bool> openAppSettings() {
+    return _api.openAppSettings();
+  }
+
+  @override
+  Future<List<HealthDataAggregate>> readAggregates({
+    required Set<HealthMetricType> metricTypes,
+    required DateTime start,
+    required DateTime end,
+  }) async {
+    final rawAggregates = await _api.readAggregates(
+      metricTypes: _wireNames(metricTypes),
+      startTime: start,
+      endTime: end,
+    );
+    return rawAggregates
+        .map(_mapNativeAggregate)
+        .whereType<HealthDataAggregate>()
+        .toList(growable: false);
+  }
+
+  @override
   Future<List<HealthDataSample>> readSamples({
     required Set<HealthMetricType> metricTypes,
     required DateTime start,
@@ -62,6 +84,30 @@ final class IosHealthDataGateway implements HealthDataGateway {
       unit: unit,
       startTime: DateTime.fromMillisecondsSinceEpoch(startTimeMillis.round()),
       endTime: DateTime.fromMillisecondsSinceEpoch(endTimeMillis.round()),
+    );
+  }
+
+  static HealthDataAggregate? _mapNativeAggregate(Map<String, Object?> raw) {
+    final typeName = raw['type'];
+    final unit = raw['unit'];
+    final sampleCount = raw['sample_count'];
+    if (typeName is! String || unit is! String || sampleCount is! num) {
+      return null;
+    }
+
+    final type = HealthMetricTypeNames.fromWireName(typeName);
+    if (type == null) {
+      return null;
+    }
+
+    return HealthDataAggregate(
+      type: type,
+      unit: unit,
+      sampleCount: sampleCount.round(),
+      value: _asDouble(raw['value']),
+      average: _asDouble(raw['average']),
+      min: _asDouble(raw['min']),
+      max: _asDouble(raw['max']),
     );
   }
 
