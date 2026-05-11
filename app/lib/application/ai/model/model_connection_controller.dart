@@ -63,6 +63,7 @@ final class ModelConnectionController extends ChangeNotifier {
   StreamSubscription<ModelInstallProgress>? _activeProgressSubscription;
   Completer<void>? _activeProgressCompletion;
   var _connectionAttempt = 0;
+  var _hasUserRequestedConnection = false;
   ModelConnectionSnapshot _snapshot = const ModelConnectionSnapshot.initial();
   String? _preferredModelId;
 
@@ -76,6 +77,14 @@ final class ModelConnectionController extends ChangeNotifier {
   }
 
   Future<void> ensureModelReady({
+    String? preferredModelId,
+    bool force = false,
+  }) {
+    _hasUserRequestedConnection = true;
+    return _ensureModelReady(preferredModelId: preferredModelId, force: force);
+  }
+
+  Future<void> _ensureModelReady({
     String? preferredModelId,
     bool force = false,
   }) {
@@ -136,7 +145,10 @@ final class ModelConnectionController extends ChangeNotifier {
   Future<void> handleLifecycleState(AppLifecycleState state) async {
     switch (state) {
       case AppLifecycleState.resumed:
-        await ensureModelReady(preferredModelId: _preferredModelId);
+        if (!_hasUserRequestedConnection) {
+          return;
+        }
+        await _ensureModelReady(preferredModelId: _preferredModelId);
         return;
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:

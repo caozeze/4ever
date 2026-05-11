@@ -52,6 +52,8 @@ macOS and Xcode. Windows is used for shared Flutter/Dart and documentation work.
 - First demo target: iOS App prepares Gemma 4 E2B Core ML in-app, loads it
   through the unified `LlmRuntime`, runs a smoke test, and answers a local text
   prompt from the Flutter UI.
+- Gemma 4 E4B Core ML stays visible as a pending real-device validation option
+  until the full E4B download and iPhone runtime path are verified.
 - First release direction: offline-only app. `server/` is future optional and not part of the current demo path.
 - Current model-management foundation is implemented in Dart and covered by tests.
 - Apple Health sample import, demographic/clinical import, diet/photo calorie

@@ -4,10 +4,10 @@
     {
       "identity" : "coreml-llm",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/caozeze/CoreML-LLM",
+      "location" : "https://github.com/john-rocky/CoreML-LLM",
       "state" : {
-        "branch" : "fix/x86_64-simulator-float16-conversion",
-        "revision" : "e95c10e343736570134bd690a5a9cd4c579e17c8"
+        "revision" : "c69a4e9bb8f9574f7b332babd93bb745c1022c11",
+        "version" : "1.9.0"
       }
     },
     {

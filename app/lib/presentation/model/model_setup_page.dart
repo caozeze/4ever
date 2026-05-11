@@ -82,6 +82,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
             final canPrepare =
                 selectedModel != null &&
                 data.isCompatible(selectedModel) &&
+                !data.isPendingValidation(selectedModel) &&
                 !connection.isConnecting;
             return ListView(
               padding: const EdgeInsets.all(16),
@@ -92,7 +93,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Download one model before chat. You can return here later to switch between E2B and E4B.',
+                  'Download E2B before chat. E4B remains listed for real-device validation.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 16),
@@ -100,6 +101,7 @@ class _ModelSetupPageState extends ConsumerState<ModelSetupPage> {
                   _ModelOptionTile(
                     model: model,
                     capabilities: data.capabilities,
+                    pendingValidation: data.isPendingValidation(model),
                     selected: model.id == _selectedModelId,
                     connection: connection.modelId == model.id
                         ? connection
@@ -177,6 +179,7 @@ class _ModelOptionTile extends StatelessWidget {
   const _ModelOptionTile({
     required this.model,
     required this.capabilities,
+    required this.pendingValidation,
     required this.selected,
     required this.connection,
     required this.onSelected,
@@ -184,6 +187,7 @@ class _ModelOptionTile extends StatelessWidget {
 
   final ModelManifestEntry model;
   final DeviceCapabilities capabilities;
+  final bool pendingValidation;
   final bool selected;
   final ModelConnectionSnapshot? connection;
   final VoidCallback onSelected;
@@ -195,11 +199,11 @@ class _ModelOptionTile extends StatelessWidget {
         capabilities.freeDiskBytes >= model.minFreeDiskBytes;
     final connection = this.connection;
     final statusText = connection == null
-        ? _compatibilityText(compatible)
+        ? _compatibilityText(compatible, pendingValidation)
         : _statusText(connection.status);
     return Card(
       child: ListTile(
-        onTap: compatible ? onSelected : null,
+        onTap: compatible && !pendingValidation ? onSelected : null,
         leading: Icon(
           selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
           color: selected ? Theme.of(context).colorScheme.primary : null,
@@ -217,7 +221,10 @@ class _ModelOptionTile extends StatelessWidget {
     );
   }
 
-  String _compatibilityText(bool compatible) {
+  String _compatibilityText(bool compatible, bool pendingValidation) {
+    if (pendingValidation) {
+      return 'Pending real-device validation';
+    }
     if (compatible) {
       return 'Available for this device';
     }
@@ -251,5 +258,9 @@ class _ModelSetupData {
   bool isCompatible(ModelManifestEntry model) {
     return capabilities.totalMemoryGb >= model.minMemoryGb &&
         capabilities.freeDiskBytes >= model.minFreeDiskBytes;
+  }
+
+  bool isPendingValidation(ModelManifestEntry model) {
+    return model.id == 'gemma-4-e4b-it-coreml-ios';
   }
 }

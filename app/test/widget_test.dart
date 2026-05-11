@@ -35,9 +35,30 @@ void main() {
     expect(find.text('Models'), findsOneWidget);
     expect(find.text('Choose Local Gemma'), findsOneWidget);
     expect(find.text('Gemma 4 E2B Core ML'), findsOneWidget);
+    expect(find.text('Gemma 4 E4B Core ML'), findsOneWidget);
+    expect(
+      find.textContaining('Pending real-device validation'),
+      findsOneWidget,
+    );
     expect(
       find.byKey(const ValueKey<String>('model_prepare_button')),
       findsOne,
+    );
+  });
+
+  testWidgets('shows E4B as pending real-device validation', (
+    WidgetTester tester,
+  ) async {
+    await _pumpTestApp(tester);
+
+    final e4bTile = tester.widget<ListTile>(
+      find.widgetWithText(ListTile, 'Gemma 4 E4B Core ML'),
+    );
+
+    expect(e4bTile.onTap, isNull);
+    expect(
+      find.textContaining('Pending real-device validation'),
+      findsOneWidget,
     );
   });
 
@@ -259,7 +280,7 @@ class _FakeCatalog implements ModelCatalog {
   Future<ModelManifest> load() async {
     return const ModelManifest(
       schemaVersion: '1.0',
-      models: <ModelManifestEntry>[_testModel],
+      models: <ModelManifestEntry>[_testModel, _testE4BModel],
     );
   }
 }
@@ -394,6 +415,9 @@ class _FakeLlmRuntime implements LlmRuntime {
     List<Object> attachments = const <Object>[],
     LlmGenerationConfig config = const LlmGenerationConfig(),
   }) async {
+    if (prompt == 'Reply with the single word: ready') {
+      return LlmResponse(text: 'ready', modelId: _loadedModelId ?? 'unloaded');
+    }
     return LlmResponse(
       text: '**The answer is 4.**',
       modelId: _loadedModelId ?? 'unloaded',
@@ -458,5 +482,38 @@ const _testModel = ModelManifestEntry(
   platforms: <String>['ios'],
   selectionPriority: 10,
   repoId: 'mlboydaisuke/gemma-4-E2B-coreml',
+  allowPatterns: <String>['*.json', '*.mlmodelc/**', '*.bin', '*.txt'],
+);
+
+const _testE4BModel = ModelManifestEntry(
+  id: 'gemma-4-e4b-it-coreml-ios',
+  displayName: 'Gemma 4 E4B Core ML',
+  provider: 'mlboydaisuke',
+  modelId: 'mlboydaisuke/gemma-4-E4B-coreml',
+  runtime: 'coreml_llm',
+  artifactType: 'coreml_bundle',
+  revision: 'main',
+  fileName: '',
+  downloadUrl: '',
+  sourceCommit: 'main',
+  sha256: 'BUNDLE_READINESS_CHECK',
+  sizeBytes: 3654467584,
+  minMemoryGb: 12,
+  minFreeDiskBytes: 10,
+  modalities: <String>['text'],
+  supportsThinking: true,
+  maxContextTokens: 32000,
+  defaultGenerationConfig: LlmGenerationConfig(
+    topK: 64,
+    topP: 0.95,
+    temperature: 1,
+    maxTokens: 4000,
+    enableThinking: true,
+  ),
+  accelerators: <String>['ane', 'gpu', 'cpu'],
+  isDefault: false,
+  platforms: <String>['ios'],
+  selectionPriority: 20,
+  repoId: 'mlboydaisuke/gemma-4-E4B-coreml',
   allowPatterns: <String>['*.json', '*.mlmodelc/**', '*.bin', '*.txt'],
 );

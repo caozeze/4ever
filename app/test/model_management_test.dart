@@ -248,7 +248,7 @@ void main() {
             'status': 'failed',
             'created_at': '2026-04-27T00:00:00.000Z',
             'updated_at': '2026-04-27T00:00:00.000Z',
-            'failure_reason': 'smokeTestFailed',
+            'failure_reason': 'legacySmokeFailure',
             'error_message': 'legacy smoke failure',
           },
         ],
@@ -388,6 +388,7 @@ void main() {
       ModelInstallStatus.ready,
     ]);
     expect(runtime.initializeCalls, 0);
+    expect(runtime.generatedPrompts, ['Reply with the single word: ready']);
     expect((await registry.read(model.id))?.status, ModelInstallStatus.ready);
   });
 
@@ -431,6 +432,40 @@ void main() {
       expect(record?.status, ModelInstallStatus.ready);
     },
   );
+
+  test('lifecycle fails when the runtime smoke test is not ready', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'coreml_lifecycle_smoke_failed_',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final model = _testCoreMlModel();
+    final registry = _MemoryRegistryStore();
+    final runtime = _FakeLlmRuntime()..smokeResponseText = 'not ready';
+    await _writeReadyCoreMlBundle(tempDir.path);
+    final service = ModelLifecycleService(
+      catalog: _FakeCatalog(
+        ModelManifest(schemaVersion: '1.0', models: [model]),
+      ),
+      deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+      selectionService: const ModelSelectionService(),
+      storagePaths: _FakeStoragePaths(tempDir.path),
+      artifactPreparer: CoreMlN1024BundleReadiness(),
+      registryStore: registry,
+      runtime: runtime,
+    );
+
+    final progress = await service.ensureDemoModelReady().toList();
+
+    expect(progress.map((item) => item.status), [
+      ModelInstallStatus.notInstalled,
+      ModelInstallStatus.installed,
+      ModelInstallStatus.loading,
+      ModelInstallStatus.failed,
+    ]);
+    expect(progress.last.failureReason, ModelFailureReason.smokeTestFailed);
+    expect(runtime.initializeCalls, 1);
+    expect((await registry.read(model.id))?.status, ModelInstallStatus.failed);
+  });
 
   test(
     'lifecycle fails locally when the fixed model directory is incomplete',
@@ -505,6 +540,41 @@ void main() {
     expect(runtime.initializedModelId, model.id);
     expect((await registry.read(model.id))?.status, ModelInstallStatus.ready);
   });
+
+  test(
+    'lifecycle refuses missing CoreML download when disk is too low',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'coreml_lifecycle_low_disk_',
+      );
+      addTearDown(() async => tempDir.delete(recursive: true));
+      final model = _testCoreMlModel(minFreeDiskBytes: 200);
+      final registry = _MemoryRegistryStore();
+      final runtime = _FakeLlmRuntime();
+      final preparer = _DownloadingArtifactPreparer();
+      final service = ModelLifecycleService(
+        catalog: _FakeCatalog(
+          ModelManifest(schemaVersion: '1.0', models: [model]),
+        ),
+        deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+        selectionService: const ModelSelectionService(),
+        storagePaths: _FakeStoragePaths(tempDir.path),
+        artifactPreparer: preparer,
+        registryStore: registry,
+        runtime: runtime,
+      );
+
+      final progress = await service.ensureDemoModelReady().toList();
+
+      expect(progress.map((item) => item.status), [
+        ModelInstallStatus.notInstalled,
+        ModelInstallStatus.failed,
+      ]);
+      expect(progress.last.failureReason, ModelFailureReason.insufficientDisk);
+      expect(preparer.prepareCalls, 0);
+      expect(runtime.initializeCalls, 0);
+    },
+  );
 
   test(
     'lifecycle ignores stale registry paths and uses resolved fixed path',
@@ -865,6 +935,26 @@ void main() {
   );
 
   test(
+    'model connection lifecycle does not prepare on resume before user request',
+    () async {
+      var loadCalls = 0;
+      final controller = ModelConnectionController(
+        loadController: () {
+          loadCalls += 1;
+          return Future<DemoChatController>.value(
+            _ScriptedDemoChatController(),
+          );
+        },
+      );
+
+      await controller.handleLifecycleState(AppLifecycleState.resumed);
+
+      expect(loadCalls, 0);
+      expect(controller.snapshot.status, ModelInstallStatus.notInstalled);
+    },
+  );
+
+  test(
     'model connection lifecycle only cancels on background states',
     () async {
       final model = _testCoreMlModel();
@@ -1003,6 +1093,7 @@ ModelManifestEntry _testCoreMlModel({
   String id = 'gemma-4-e2b-it-coreml-ios',
   int maxContextTokens = 2048,
   int maxOutputTokens = 4000,
+  int minFreeDiskBytes = 10,
 }) {
   return ModelManifestEntry(
     id: id,
@@ -1018,7 +1109,7 @@ ModelManifestEntry _testCoreMlModel({
     sha256: 'BUNDLE_READINESS_CHECK',
     sizeBytes: 2583085056,
     minMemoryGb: 8,
-    minFreeDiskBytes: 10,
+    minFreeDiskBytes: minFreeDiskBytes,
     modalities: <String>['text'],
     supportsThinking: true,
     maxContextTokens: maxContextTokens,
@@ -1204,6 +1295,7 @@ class _FakeLlmRuntime implements LlmRuntime {
   String? initializedModelId;
   LlmModelConfig? initializedConfig;
   String responseText = 'The answer is 4.';
+  String smokeResponseText = 'ready';
   var initializeCalls = 0;
   var cancelCalls = 0;
   final List<String> responseTexts = <String>[];
@@ -1223,6 +1315,12 @@ class _FakeLlmRuntime implements LlmRuntime {
   }) async {
     generatedPrompts.add(prompt);
     generatedConfigs.add(config);
+    if (prompt == 'Reply with the single word: ready') {
+      return LlmResponse(
+        text: smokeResponseText,
+        modelId: initializedModelId ?? 'unloaded',
+      );
+    }
     final nextResponse = responseTexts.isEmpty
         ? responseText
         : responseTexts.removeAt(0);

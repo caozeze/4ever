@@ -42,9 +42,11 @@ class ModelLifecycleService {
   final LlmRuntime _runtime;
   final AgentTraceSink _traceSink;
 
+  static const _smokeTestPrompt = 'Reply with the single word: ready';
+  static const _smokeTestExpectedText = 'ready';
+
   Stream<ModelInstallProgress> ensureDemoModelReady({
     String? preferredModelId,
-    bool requiresWiFi = true,
   }) async* {
     final capabilities = await _deviceCapabilitiesReader.read();
     final manifest = await _catalog.load();
@@ -54,29 +56,19 @@ class ModelLifecycleService {
       preferredModelId: preferredModelId ?? DemoModelIdentity.modelId,
     );
 
-    yield* ensureLocalGemma(
-      model: model,
-      capabilities: capabilities,
-      requiresWiFi: requiresWiFi,
-    );
+    yield* ensureLocalGemma(model: model, capabilities: capabilities);
   }
 
   Stream<ModelInstallProgress> installAndLoad({
     required ModelManifestEntry model,
     required DeviceCapabilities capabilities,
-    bool requiresWiFi = true,
   }) {
-    return ensureLocalGemma(
-      model: model,
-      capabilities: capabilities,
-      requiresWiFi: requiresWiFi,
-    );
+    return ensureLocalGemma(model: model, capabilities: capabilities);
   }
 
   Stream<ModelInstallProgress> ensureLocalGemma({
     required ModelManifestEntry model,
     required DeviceCapabilities capabilities,
-    bool requiresWiFi = true,
   }) async* {
     final now = DateTime.now().toUtc();
     final targetPath = await _storagePaths.modelFilePath(model);
@@ -130,6 +122,18 @@ class ModelLifecycleService {
           message:
               readiness.message ??
               'Local Gemma model is missing at $targetPath.',
+        );
+        return;
+      }
+      if (capabilities.freeDiskBytes < model.minFreeDiskBytes) {
+        yield* _markFailed(
+          record: record,
+          model: model,
+          reason: ModelFailureReason.insufficientDisk,
+          message:
+              'Not enough free disk to download ${model.displayName}. '
+              'Required ${model.minFreeDiskBytes} bytes, available '
+              '${capabilities.freeDiskBytes} bytes.',
         );
         return;
       }
@@ -198,17 +202,17 @@ class ModelLifecycleService {
     final runtimeStatus = await _runtime.getStatus();
     if (runtimeStatus.state == 'ready' &&
         runtimeStatus.loadedModelId == model.id) {
-      final ready = record.copyWith(
-        status: ModelInstallStatus.ready,
-        updatedAt: DateTime.now().toUtc(),
-      );
-      await _registryStore.upsert(ready);
-      _trace('model_connection_ready', modelId: model.id, status: 'ready');
-      yield ModelInstallProgress(
-        modelId: model.id,
-        status: ModelInstallStatus.ready,
-        progress: 1,
-      );
+      final smokeFailure = await _runSmokeTest(model);
+      if (smokeFailure != null) {
+        yield* _markFailed(
+          record: record,
+          model: model,
+          reason: ModelFailureReason.smokeTestFailed,
+          message: smokeFailure,
+        );
+        return;
+      }
+      yield* _markReady(record: record, model: model);
       return;
     }
 
@@ -272,18 +276,18 @@ class ModelLifecycleService {
       return;
     }
 
-    await _registryStore.upsert(
-      record.copyWith(
-        status: ModelInstallStatus.ready,
-        updatedAt: DateTime.now().toUtc(),
-      ),
-    );
-    yield ModelInstallProgress(
-      modelId: model.id,
-      status: ModelInstallStatus.ready,
-      progress: 1,
-    );
-    _trace('model_connection_ready', modelId: model.id, status: 'ready');
+    final smokeFailure = await _runSmokeTest(model);
+    if (smokeFailure != null) {
+      yield* _markFailed(
+        record: record,
+        model: model,
+        reason: ModelFailureReason.smokeTestFailed,
+        message: smokeFailure,
+      );
+      return;
+    }
+
+    yield* _markReady(record: record, model: model);
   }
 
   ModelInstallProgress _failed(
@@ -316,6 +320,51 @@ class ModelLifecycleService {
       failureReason: reason,
       message: message,
     );
+  }
+
+  Stream<ModelInstallProgress> _markReady({
+    required ModelInstallRecord record,
+    required ModelManifestEntry model,
+  }) async* {
+    final ready = record.copyWith(
+      status: ModelInstallStatus.ready,
+      updatedAt: DateTime.now().toUtc(),
+    );
+    await _registryStore.upsert(ready);
+    _trace('model_connection_ready', modelId: model.id, status: 'ready');
+    yield ModelInstallProgress(
+      modelId: model.id,
+      status: ModelInstallStatus.ready,
+      progress: 1,
+    );
+  }
+
+  Future<String?> _runSmokeTest(ModelManifestEntry model) async {
+    _trace('model_smoke_test_start', modelId: model.id, status: 'checking');
+    try {
+      final response = await _runtime.generateOnce(prompt: _smokeTestPrompt);
+      final text = response.text.trim().toLowerCase();
+      final normalized = text.replaceAll(RegExp(r'^[^a-z]+|[^a-z]+$'), '');
+      if (normalized != _smokeTestExpectedText) {
+        _trace(
+          'model_smoke_test_failed',
+          modelId: model.id,
+          status: 'failed',
+          errorCode: ModelFailureReason.smokeTestFailed.name,
+        );
+        return 'Local Gemma smoke test did not return "ready".';
+      }
+      _trace('model_smoke_test_ready', modelId: model.id, status: 'ready');
+      return null;
+    } on Object catch (error) {
+      _trace(
+        'model_smoke_test_failed',
+        modelId: model.id,
+        status: 'failed',
+        errorCode: ModelFailureReason.smokeTestFailed.name,
+      );
+      return 'Local Gemma smoke test failed: $error';
+    }
   }
 
   void _trace(

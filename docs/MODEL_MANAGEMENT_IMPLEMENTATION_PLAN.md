@@ -33,7 +33,7 @@ LlmRuntimeHostApi
 | Platform | First runtime | Artifact type | Default model | Notes |
 | --- | --- | --- | --- | --- |
 | iOS | `coreml_llm` | `coreml_bundle` | Gemma 4 E2B CoreML | 通过 `john-rocky/CoreML-LLM` Swift Package，优先 ANE/Core ML |
-| iOS optional | `coreml_llm` | `coreml_bundle` | Gemma 4 E4B CoreML | 高质量手动档，设备满足内存/磁盘后可选 |
+| iOS optional | `coreml_llm` | `coreml_bundle` | Gemma 4 E4B CoreML | 保留在 manifest/UI，第一版先标记为待真机验证 |
 | Android | `litert_lm` | `litertlm_file` | Gemma 4 E4B `.litertlm` | Kotlin adapter 调 LiteRT-LM Android API |
 | iOS future fallback | `litert_lm` | `litertlm_file` | TBD | 保留能力，不作为第一版首选 |
 
@@ -141,7 +141,8 @@ selection priority
 Expected behavior:
 
 - iOS fresh install recommends CoreML E2B.
-- iOS can manually select CoreML E4B when memory/disk are sufficient.
+- iOS shows CoreML E4B as pending real-device validation until full download,
+  initialize, smoke test, and chat are verified.
 - Android defaults to LiteRT-LM E4B when supported, otherwise E2B.
 - Incompatible platform entries are never selected.
 
@@ -268,11 +269,14 @@ Dart unit tests:
 ```text
 manifest parses coreml_bundle and litertlm_file
 iOS default selection returns CoreML E2B
-iOS preferred selection can return CoreML E4B
+iOS setup marks CoreML E4B pending/disabled
 Android selection returns LiteRT-LM entries
 incompatible platform entries are ignored
 registry persists runtime and artifact metadata
 single-file lifecycle still reaches ready with fake runtime
+runtime smoke test can pass/fail after initialize
+missing CoreML artifact fails before download when disk is too low
+app resume does not prepare/download before user intent
 ```
 
 iOS build/runtime tests:
@@ -286,22 +290,20 @@ real-device CoreML E2B: prepare bundle -> initialize -> generateOnce -> ready
 DeviceCapabilitiesApi returns memory/disk and affects selection
 ```
 
-Known iOS build compatibility issue:
+Current CoreML-LLM package pin:
 
 ```text
-CoreML-LLM v1.7.0 builds for iphoneos on the current Intel Mac environment.
-CoreML-LLM v1.7.0 fails for x86_64 iOS Simulator because Accelerate's
-vDSP.convertElements(Float16 -> Float) overload is unavailable in the
-x86_64-apple-ios-simulator SDK slice.
-Apple Silicon simulator is expected to use the arm64 simulator SDK, where the
-overload is present, but this still needs teammate verification.
+The app pins official john-rocky/CoreML-LLM v1.9.0.
+Upstream PR 153 merged the x86_64 simulator Float16 conversion fallback.
+Codemagic/macOS still needs to verify Swift Package resolution, simulator build,
+and no-codesign device build after the pin change.
 ```
 
 Manual demo scenarios:
 
 ```text
 fresh install shows E2B CoreML as iOS recommendation
-E4B is visible as manual iOS quality option
+E4B is visible but disabled as pending real-device validation
 registry marks installed after bundle preparation
 load runs smoke test and enters chat
 Android route still uses .litertlm entries
@@ -337,7 +339,7 @@ CoreML integration work completed:
   remains runtime-agnostic.
 - Streaming is still intentionally deferred.
 
-Verification completed:
+Historical verification completed before the official v1.9.0 pin:
 
 ```text
 flutter analyze
@@ -347,48 +349,40 @@ flutter test
 Result: pass
 
 flutter build ios --debug --no-codesign
-Result: pass with CoreML-LLM v1.7.0
+Result: pass with the then-current CoreML-LLM package
 
 flutter build ios --simulator --debug
-Result: fail on Intel Mac x86_64 simulator with CoreML-LLM v1.7.0
+Result: failed on Intel Mac x86_64 simulator before upstream PR 153
 ```
 
-Build issue root cause:
+Resolved build issue:
 
 ```text
 CoreML-LLM v0.8.0 failed simulator builds because ModelDownloader used
 Process() under targetEnvironment(simulator). Upstream fixed this in later
 versions by restricting Process() to os(macOS).
 
-CoreML-LLM v1.7.0 fixes the Process() issue, but has a separate Intel simulator
-compatibility problem in ChunkedEngine.swift:
+An additional Intel simulator compatibility issue in ChunkedEngine.swift
+blocked x86_64 iOS simulator builds:
 
 vDSP.convertElements(of: [Float16], to: inout [Float])
 
 The overload exists for iphoneos arm64e and arm64 iOS simulator SDK slices, but
-not for x86_64 iOS simulator. This blocks Intel Mac simulator builds while
-allowing real iPhone builds.
+not for x86_64 iOS simulator.
 ```
 
-Fork/PR decision:
+Current package decision:
 
-- Keep official CoreML-LLM v1.7.0 as the target runtime version.
-- Create a fork branch for a minimal x86_64 simulator compatibility patch.
-- Patch only the `Float16 -> Float` conversion path, using a manual conversion
-  fallback for `targetEnvironment(simulator) && arch(x86_64)`.
-- Submit the same patch upstream as a PR.
-- Point this app to the fork branch until the upstream PR is merged and tagged.
-- Switch back to the official upstream tag after merge/release.
+- Pin official `john-rocky/CoreML-LLM` at `v1.9.0`.
+- Upstream PR 153 merged the x86_64 simulator Float16 conversion fallback.
+- Keep Codemagic/macOS validation as the remaining proof that Swift Package
+  resolution, simulator build, and no-codesign device build still pass.
 
 ## 12. Next Work
 
 Immediate next steps:
 
-1. Create or regain access to the team/user fork of
-   `https://github.com/john-rocky/CoreML-LLM`.
-2. Add a branch such as `fix/x86_64-simulator-float16-conversion`.
-3. Apply the minimal fallback around `vDSP.convertElements(Float16 -> Float)`.
-4. Validate:
+1. Run Codemagic/macOS iOS validation with official CoreML-LLM `v1.9.0`:
 
 ```text
 Intel Mac:
@@ -404,9 +398,7 @@ flutter analyze
 flutter test
 ```
 
-5. Update this app's SPM dependency to the fork branch.
-6. Open the upstream CoreML-LLM PR.
-7. Run true iPhone smoke test after model bundle preparation:
+2. Run true iPhone E2B smoke test after model bundle preparation:
 
 ```text
 prepare Gemma 4 E2B CoreML bundle
@@ -415,21 +407,28 @@ generateOnce("Reply with the single word: ready")
 expected output contains "ready"
 ```
 
+3. Keep E4B disabled in UI until full E4B download, initialization, smoke test,
+   and chat are verified on a capable iPhone.
+
 ## 13. Execution Update
 
 ### 2026-04-29
 
-Fork branch work completed:
+Upstream compatibility patch submitted as
+`https://github.com/john-rocky/CoreML-LLM/pull/153`. It has since merged and is
+available through the official `v1.9.0` package pin used by this app.
 
-- Created fork: `https://github.com/caozeze/CoreML-LLM`.
-- Created fork branch: `fix/x86_64-simulator-float16-conversion`.
-- Applied the minimal `Float16 -> Float` fallback in
-  `Sources/CoreMLLLM/ChunkedEngine.swift`.
-- Pushed commit:
-  `e95c10e343736570134bd690a5a9cd4c579e17c8`.
-- Opened upstream PR:
-  `https://github.com/john-rocky/CoreML-LLM/pull/153`.
-- Updated this app's Swift Package dependency to point at the fork branch.
+### 2026-05-11
+
+PR hardening completed on `codex-feature-gemma`:
+
+- Switched the app SPM package reference back to official
+  `john-rocky/CoreML-LLM` at `v1.9.0`; upstream PR 153 is merged.
+- Added Dart lifecycle guards for low disk before download.
+- Added runtime smoke test after `initialize`; registry is marked ready only
+  after output contains `ready`.
+- Kept E4B visible but disabled as pending real-device validation.
+- Prevented app resume from starting model preparation before user intent.
 
 Remaining verification:
 
@@ -451,4 +450,7 @@ prepare Gemma 4 E2B CoreML bundle
 LlmRuntime.initialize
 generateOnce("Reply with the single word: ready")
 expected output contains "ready"
+
+E4B:
+full download, initialize, smoke test, and chat remain pending
 ```
