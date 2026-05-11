@@ -10,16 +10,19 @@ import '../demo_chat_controller.dart';
 final class ModelConnectionSnapshot {
   const ModelConnectionSnapshot({
     required this.status,
+    this.modelId,
     this.message,
     this.failureReason,
   });
 
   const ModelConnectionSnapshot.initial()
     : status = ModelInstallStatus.notInstalled,
+      modelId = null,
       message = null,
       failureReason = null;
 
   final ModelInstallStatus status;
+  final String? modelId;
   final String? message;
   final ModelFailureReason? failureReason;
 
@@ -33,11 +36,13 @@ final class ModelConnectionSnapshot {
 
   ModelConnectionSnapshot copyWith({
     ModelInstallStatus? status,
+    String? modelId,
     String? message,
     ModelFailureReason? failureReason,
   }) {
     return ModelConnectionSnapshot(
       status: status ?? this.status,
+      modelId: modelId ?? this.modelId,
       message: message,
       failureReason: failureReason ?? this.failureReason,
     );
@@ -47,7 +52,7 @@ final class ModelConnectionSnapshot {
 final class ModelConnectionController extends ChangeNotifier {
   ModelConnectionController({
     required Future<DemoChatController> Function() loadController,
-    Duration connectionTimeout = const Duration(seconds: 90),
+    Duration connectionTimeout = const Duration(minutes: 45),
   }) : _loadController = loadController,
        _connectionTimeout = connectionTimeout;
 
@@ -59,8 +64,10 @@ final class ModelConnectionController extends ChangeNotifier {
   Completer<void>? _activeProgressCompletion;
   var _connectionAttempt = 0;
   ModelConnectionSnapshot _snapshot = const ModelConnectionSnapshot.initial();
+  String? _preferredModelId;
 
   ModelConnectionSnapshot get snapshot => _snapshot;
+  String? get preferredModelId => _preferredModelId;
 
   @override
   void dispose() {
@@ -68,7 +75,17 @@ final class ModelConnectionController extends ChangeNotifier {
     super.dispose();
   }
 
-  Future<void> ensureModelReady({bool force = false}) {
+  Future<void> ensureModelReady({
+    String? preferredModelId,
+    bool force = false,
+  }) {
+    final requestedModelId = preferredModelId ?? _preferredModelId;
+    final modelChanged =
+        requestedModelId != null && requestedModelId != _preferredModelId;
+    if (modelChanged) {
+      force = true;
+      _preferredModelId = requestedModelId;
+    }
     if (_snapshot.isReady && !force) {
       return Future<void>.value();
     }
@@ -81,24 +98,25 @@ final class ModelConnectionController extends ChangeNotifier {
       unawaited(_cancelActiveProgressSubscription());
     }
     final attempt = ++_connectionAttempt;
-    final connection = _connect(attempt).timeout(
-      _connectionTimeout,
-      onTimeout: () {
-        if (attempt == _connectionAttempt) {
-          _connectionAttempt += 1;
-          _controllerFuture = null;
-          _activeConnection = null;
-          unawaited(_cancelActiveProgressSubscription());
-          _setSnapshot(
-            const ModelConnectionSnapshot(
-              status: ModelInstallStatus.failed,
-              message: 'Local Gemma connection timed out. Tap Retry.',
-              failureReason: ModelFailureReason.runtimeFailed,
-            ),
-          );
-        }
-      },
-    );
+    final connection = _connect(attempt, preferredModelId: requestedModelId)
+        .timeout(
+          _connectionTimeout,
+          onTimeout: () {
+            if (attempt == _connectionAttempt) {
+              _connectionAttempt += 1;
+              _controllerFuture = null;
+              _activeConnection = null;
+              unawaited(_cancelActiveProgressSubscription());
+              _setSnapshot(
+                const ModelConnectionSnapshot(
+                  status: ModelInstallStatus.failed,
+                  message: 'Local Gemma connection timed out. Tap Retry.',
+                  failureReason: ModelFailureReason.runtimeFailed,
+                ),
+              );
+            }
+          },
+        );
     _activeConnection = connection;
     return connection.whenComplete(() {
       if (identical(_activeConnection, connection) &&
@@ -112,13 +130,13 @@ final class ModelConnectionController extends ChangeNotifier {
     if (_snapshot.isReady) {
       await cancelActiveGeneration();
     }
-    await ensureModelReady(force: true);
+    await ensureModelReady(preferredModelId: _preferredModelId, force: true);
   }
 
   Future<void> handleLifecycleState(AppLifecycleState state) async {
     switch (state) {
       case AppLifecycleState.resumed:
-        await ensureModelReady();
+        await ensureModelReady(preferredModelId: _preferredModelId);
         return;
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
@@ -143,10 +161,14 @@ final class ModelConnectionController extends ChangeNotifier {
     return _controllerFuture ??= _loadController();
   }
 
-  Future<void> _connect(int attempt) async {
+  Future<void> _connect(
+    int attempt, {
+    required String? preferredModelId,
+  }) async {
     _setSnapshot(
-      const ModelConnectionSnapshot(
+      ModelConnectionSnapshot(
         status: ModelInstallStatus.notInstalled,
+        modelId: preferredModelId,
         message: 'Checking local Gemma...',
       ),
     );
@@ -157,29 +179,34 @@ final class ModelConnectionController extends ChangeNotifier {
       }
       final streamDone = Completer<void>();
       late final StreamSubscription<ModelInstallProgress> subscription;
-      subscription = controller.ensureModelReady().listen(
-        (ModelInstallProgress progress) {
-          if (attempt != _connectionAttempt) {
-            unawaited(subscription.cancel());
-            if (!streamDone.isCompleted) {
-              streamDone.complete();
-            }
-            return;
-          }
-          _setSnapshot(_snapshotFor(progress));
-        },
-        onError: (Object error, StackTrace stackTrace) {
-          if (!streamDone.isCompleted) {
-            streamDone.completeError(error, stackTrace);
-          }
-        },
-        onDone: () {
-          if (!streamDone.isCompleted) {
-            streamDone.complete();
-          }
-        },
-        cancelOnError: true,
-      );
+      subscription = controller
+          .ensureModelReady(
+            preferredModelId:
+                preferredModelId ?? DemoChatController.defaultPreferredModelId,
+          )
+          .listen(
+            (ModelInstallProgress progress) {
+              if (attempt != _connectionAttempt) {
+                unawaited(subscription.cancel());
+                if (!streamDone.isCompleted) {
+                  streamDone.complete();
+                }
+                return;
+              }
+              _setSnapshot(_snapshotFor(progress));
+            },
+            onError: (Object error, StackTrace stackTrace) {
+              if (!streamDone.isCompleted) {
+                streamDone.completeError(error, stackTrace);
+              }
+            },
+            onDone: () {
+              if (!streamDone.isCompleted) {
+                streamDone.complete();
+              }
+            },
+            cancelOnError: true,
+          );
       _activeProgressSubscription = subscription;
       _activeProgressCompletion = streamDone;
       try {
@@ -207,6 +234,7 @@ final class ModelConnectionController extends ChangeNotifier {
   ModelConnectionSnapshot _snapshotFor(ModelInstallProgress progress) {
     return ModelConnectionSnapshot(
       status: progress.status,
+      modelId: progress.modelId,
       message: switch (progress.status) {
         ModelInstallStatus.ready => null,
         ModelInstallStatus.failed => progress.message,

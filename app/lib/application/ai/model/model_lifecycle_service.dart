@@ -51,7 +51,7 @@ class ModelLifecycleService {
     final model = _selectionService.select(
       manifest: manifest,
       capabilities: capabilities,
-      preferredModelId: DemoModelIdentity.modelId,
+      preferredModelId: preferredModelId ?? DemoModelIdentity.modelId,
     );
 
     yield* ensureLocalGemma(
@@ -111,7 +111,7 @@ class ModelLifecycleService {
       status: ModelInstallStatus.notInstalled,
       message: 'Checking local Gemma...',
     );
-    final readiness = await _artifactPreparer.readiness(
+    var readiness = await _artifactPreparer.readiness(
       model: model,
       targetPath: targetPath,
     );
@@ -121,14 +121,78 @@ class ModelLifecycleService {
       status: readiness.isReady ? 'ready' : 'missing',
     );
     if (!readiness.isReady) {
-      yield* _markFailed(
-        record: record,
-        model: model,
-        reason: ModelFailureReason.modelNotFound,
-        message:
-            readiness.message ?? 'Local Gemma model is missing at $targetPath.',
+      final installer = _artifactPreparer;
+      if (installer is! ModelArtifactInstaller) {
+        yield* _markFailed(
+          record: record,
+          model: model,
+          reason: ModelFailureReason.modelNotFound,
+          message:
+              readiness.message ??
+              'Local Gemma model is missing at $targetPath.',
+        );
+        return;
+      }
+      record = record.copyWith(
+        status: ModelInstallStatus.downloading,
+        updatedAt: DateTime.now().toUtc(),
       );
-      return;
+      await _registryStore.upsert(record);
+      yield ModelInstallProgress(
+        modelId: model.id,
+        status: ModelInstallStatus.downloading,
+        message: 'Downloading local Gemma...',
+      );
+      _trace('model_artifact_download_start', modelId: model.id);
+
+      final prepared = await installer.prepare(
+        model: model,
+        targetPath: targetPath,
+      );
+      if (!prepared.isReady) {
+        _trace(
+          'model_artifact_download_failed',
+          modelId: model.id,
+          status: 'failed',
+          errorCode: ModelFailureReason.downloadFailed.name,
+        );
+        yield* _markFailed(
+          record: record,
+          model: model,
+          reason: ModelFailureReason.downloadFailed,
+          message:
+              prepared.message ??
+              'Failed to download local Gemma model to $targetPath.',
+        );
+        return;
+      }
+
+      record = record.copyWith(
+        status: ModelInstallStatus.verifying,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      await _registryStore.upsert(record);
+      yield ModelInstallProgress(
+        modelId: model.id,
+        status: ModelInstallStatus.verifying,
+        message: 'Verifying local Gemma...',
+      );
+      readiness = await _artifactPreparer.readiness(
+        model: model,
+        targetPath: targetPath,
+      );
+      if (!readiness.isReady) {
+        yield* _markFailed(
+          record: record,
+          model: model,
+          reason: ModelFailureReason.modelNotFound,
+          message:
+              readiness.message ??
+              'Local Gemma model is incomplete at $targetPath.',
+        );
+        return;
+      }
+      _trace('model_artifact_download_ready', modelId: model.id);
     }
 
     final runtimeStatus = await _runtime.getStatus();
@@ -146,6 +210,12 @@ class ModelLifecycleService {
         progress: 1,
       );
       return;
+    }
+
+    if (runtimeStatus.state == 'ready' &&
+        runtimeStatus.loadedModelId != null &&
+        runtimeStatus.loadedModelId != model.id) {
+      await _runtime.unload();
     }
 
     record = record.copyWith(

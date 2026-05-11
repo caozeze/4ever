@@ -364,7 +364,7 @@ final class LlmRuntimeHostApiAdapter: NSObject {
 
   private func resolveModelDirectory(modelId: String, localPath: String) async throws -> URL {
     let localDirectory = URL(fileURLWithPath: localPath, isDirectory: true)
-    if isCoreMlBundleReady(at: localDirectory) {
+    if isCoreMlBundleReady(modelId: modelId, at: localDirectory) {
       return localDirectory
     }
 
@@ -405,21 +405,18 @@ final class LlmRuntimeHostApiAdapter: NSObject {
     }
   }
 
-  private func isCoreMlBundleReady(at directory: URL) -> Bool {
+  private func isCoreMlBundleReady(modelId: String, at directory: URL) -> Bool {
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
           isDirectory.boolValue else {
       return false
     }
 
-    let requiredRelativePaths = [
+    var requiredRelativePaths = [
       "model_config.json",
       "hf_model/config.json",
       "hf_model/tokenizer.json",
       "hf_model/tokenizer_config.json",
-      "chunk1.mlmodelc/coremldata.bin",
-      "chunk2_3way.mlmodelc/coremldata.bin",
-      "chunk3_3way.mlmodelc/coremldata.bin",
       "embed_tokens_q8.bin",
       "embed_tokens_scales.bin",
       "embed_tokens_per_layer_q8.bin",
@@ -431,6 +428,20 @@ final class LlmRuntimeHostApiAdapter: NSObject {
       "cos_full.npy",
       "sin_full.npy"
     ]
+    if modelId.contains("e4b") {
+      requiredRelativePaths.append(contentsOf: [
+        "chunk1.mlmodelc/coremldata.bin",
+        "chunk2.mlmodelc/coremldata.bin",
+        "chunk3.mlmodelc/coremldata.bin",
+        "chunk4.mlmodelc/coremldata.bin"
+      ])
+    } else {
+      requiredRelativePaths.append(contentsOf: [
+        "chunk1.mlmodelc/coremldata.bin",
+        "chunk2_3way.mlmodelc/coremldata.bin",
+        "chunk3_3way.mlmodelc/coremldata.bin"
+      ])
+    }
 
     for relativePath in requiredRelativePaths {
       let file = directory.appendingPathComponent(relativePath)

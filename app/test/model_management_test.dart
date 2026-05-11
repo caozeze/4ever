@@ -262,7 +262,7 @@ void main() {
     expect(persisted?.errorMessage, 'legacy smoke failure');
   });
 
-  test('fixed app support path resolver returns the n1024 demo path', () async {
+  test('app support path resolver uses model id and revision', () async {
     final tempDir = await Directory.systemTemp.createTemp('fixed_model_path_');
     addTearDown(() async => tempDir.delete(recursive: true));
     final paths = ApplicationSupportModelStoragePaths(
@@ -271,10 +271,7 @@ void main() {
 
     final path = await paths.modelFilePath(_testModel());
 
-    expect(
-      path,
-      p.join(tempDir.path, 'models', 'gemma-4-e2b-it-coreml-ios', 'n1024'),
-    );
+    expect(path, p.join(tempDir.path, 'models', 'gemma-4-e2b-it', 'commit'));
     expect(await Directory(path).exists(), isTrue);
     expect(
       await paths.registryFilePath(),
@@ -289,7 +286,7 @@ void main() {
       addTearDown(() async => tempDir.delete(recursive: true));
       await _writeReadyCoreMlBundle(tempDir.path);
 
-      final readiness = await const CoreMlN1024BundleReadiness().readiness(
+      final readiness = await CoreMlN1024BundleReadiness().readiness(
         model: _testCoreMlModel(),
         targetPath: tempDir.path,
       );
@@ -303,7 +300,7 @@ void main() {
     addTearDown(() async => tempDir.delete(recursive: true));
     final targetPath = p.join(tempDir.path, 'models', 'missing');
 
-    final readiness = await const CoreMlN1024BundleReadiness().readiness(
+    final readiness = await CoreMlN1024BundleReadiness().readiness(
       model: _testCoreMlModel(),
       targetPath: targetPath,
     );
@@ -332,15 +329,36 @@ void main() {
         await file.writeAsString(path);
       }
 
-      final readiness = await const CoreMlN1024BundleReadiness().readiness(
+      final readiness = await CoreMlN1024BundleReadiness().readiness(
         model: _testCoreMlModel(),
         targetPath: tempDir.path,
       );
 
       expect(readiness.isReady, isFalse);
-      expect(readiness.message, contains('chunk1.mlmodelc/coremldata.bin'));
+      expect(readiness.message, contains('embed_tokens_q8.bin'));
     },
   );
+
+  test('CoreML readiness accepts E4B four chunk bundle layout', () async {
+    final tempDir = await Directory.systemTemp.createTemp('e4b_ready_');
+    addTearDown(() async => tempDir.delete(recursive: true));
+    await _writeReadyCoreMlBundle(
+      tempDir.path,
+      chunkPaths: const <String>[
+        'chunk1.mlmodelc/coremldata.bin',
+        'chunk2.mlmodelc/coremldata.bin',
+        'chunk3.mlmodelc/coremldata.bin',
+        'chunk4.mlmodelc/coremldata.bin',
+      ],
+    );
+
+    final readiness = await CoreMlN1024BundleReadiness().readiness(
+      model: _testCoreMlModel(id: 'gemma-4-e4b-it-coreml-ios'),
+      targetPath: tempDir.path,
+    );
+
+    expect(readiness.isReady, isTrue);
+  });
 
   test('lifecycle returns ready when runtime already has the model', () async {
     final tempDir = await Directory.systemTemp.createTemp(
@@ -391,7 +409,7 @@ void main() {
         deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
         selectionService: const ModelSelectionService(),
         storagePaths: _FakeStoragePaths(tempDir.path),
-        artifactPreparer: const CoreMlN1024BundleReadiness(),
+        artifactPreparer: CoreMlN1024BundleReadiness(),
         registryStore: registry,
         runtime: runtime,
       );
@@ -431,7 +449,7 @@ void main() {
         deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
         selectionService: const ModelSelectionService(),
         storagePaths: _FakeStoragePaths(tempDir.path),
-        artifactPreparer: const CoreMlN1024BundleReadiness(),
+        artifactPreparer: _RecordingArtifactPreparer(),
         registryStore: registry,
         runtime: runtime,
       );
@@ -451,6 +469,42 @@ void main() {
       );
     },
   );
+
+  test('lifecycle downloads missing CoreML bundle before loading', () async {
+    final tempDir = await Directory.systemTemp.createTemp(
+      'coreml_lifecycle_download_',
+    );
+    addTearDown(() async => tempDir.delete(recursive: true));
+    final model = _testCoreMlModel();
+    final registry = _MemoryRegistryStore();
+    final runtime = _FakeLlmRuntime();
+    final preparer = _DownloadingArtifactPreparer();
+    final service = ModelLifecycleService(
+      catalog: _FakeCatalog(
+        ModelManifest(schemaVersion: '1.0', models: [model]),
+      ),
+      deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
+      selectionService: const ModelSelectionService(),
+      storagePaths: _FakeStoragePaths(tempDir.path),
+      artifactPreparer: preparer,
+      registryStore: registry,
+      runtime: runtime,
+    );
+
+    final progress = await service.ensureDemoModelReady().toList();
+
+    expect(progress.map((item) => item.status), [
+      ModelInstallStatus.notInstalled,
+      ModelInstallStatus.downloading,
+      ModelInstallStatus.verifying,
+      ModelInstallStatus.installed,
+      ModelInstallStatus.loading,
+      ModelInstallStatus.ready,
+    ]);
+    expect(preparer.prepareCalls, 1);
+    expect(runtime.initializedModelId, model.id);
+    expect((await registry.read(model.id))?.status, ModelInstallStatus.ready);
+  });
 
   test(
     'lifecycle ignores stale registry paths and uses resolved fixed path',
@@ -487,7 +541,7 @@ void main() {
         deviceCapabilitiesReader: const _FakeDeviceCapabilitiesReader(),
         selectionService: const ModelSelectionService(),
         storagePaths: _FakeStoragePaths(tempDir.path),
-        artifactPreparer: const CoreMlN1024BundleReadiness(),
+        artifactPreparer: CoreMlN1024BundleReadiness(),
         registryStore: registry,
         runtime: runtime,
       );
@@ -946,11 +1000,12 @@ ModelManifestEntry _testModel() {
 }
 
 ModelManifestEntry _testCoreMlModel({
+  String id = 'gemma-4-e2b-it-coreml-ios',
   int maxContextTokens = 2048,
   int maxOutputTokens = 4000,
 }) {
   return ModelManifestEntry(
-    id: 'gemma-4-e2b-it-coreml-ios',
+    id: id,
     displayName: 'Gemma 4 E2B Core ML',
     provider: 'mlboydaisuke',
     modelId: 'mlboydaisuke/gemma-4-E2B-coreml',
@@ -1001,15 +1056,20 @@ ModelManifestEntry _testCoreMlModel({
   );
 }
 
-Future<void> _writeReadyCoreMlBundle(String targetPath) async {
+Future<void> _writeReadyCoreMlBundle(
+  String targetPath, {
+  List<String> chunkPaths = const <String>[
+    'chunk1.mlmodelc/coremldata.bin',
+    'chunk2_3way.mlmodelc/coremldata.bin',
+    'chunk3_3way.mlmodelc/coremldata.bin',
+  ],
+}) async {
   for (final path in <String>[
     'model_config.json',
     'hf_model/config.json',
     'hf_model/tokenizer.json',
     'hf_model/tokenizer_config.json',
-    'chunk1.mlmodelc/coremldata.bin',
-    'chunk2_3way.mlmodelc/coremldata.bin',
-    'chunk3_3way.mlmodelc/coremldata.bin',
+    ...chunkPaths,
     'embed_tokens_q8.bin',
     'embed_tokens_scales.bin',
     'embed_tokens_per_layer_q8.bin',
@@ -1088,7 +1148,35 @@ class _RecordingArtifactPreparer implements ModelArtifactPreparer {
     if (ready) {
       return const ModelArtifactReadiness.ready();
     }
+    return ModelArtifactReadiness.missing(
+      'Local Gemma model is missing at $targetPath.',
+    );
+  }
+}
+
+class _DownloadingArtifactPreparer implements ModelArtifactInstaller {
+  var ready = false;
+  var prepareCalls = 0;
+
+  @override
+  Future<ModelArtifactReadiness> readiness({
+    required ModelManifestEntry model,
+    required String targetPath,
+  }) async {
+    if (ready) {
+      return const ModelArtifactReadiness.ready();
+    }
     return const ModelArtifactReadiness.missing('missing CoreML test bundle');
+  }
+
+  @override
+  Future<ModelArtifactReadiness> prepare({
+    required ModelManifestEntry model,
+    required String targetPath,
+  }) async {
+    prepareCalls += 1;
+    ready = true;
+    return const ModelArtifactReadiness.ready();
   }
 }
 

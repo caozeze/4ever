@@ -36,7 +36,7 @@ final modelStoragePathsProvider = Provider<ModelStoragePaths>((Ref ref) {
 final modelArtifactPreparerProvider = Provider<ModelArtifactPreparer>((
   Ref ref,
 ) {
-  return const CoreMlN1024BundleReadiness();
+  return CoreMlN1024BundleReadiness();
 });
 
 final deviceCapabilitiesReaderProvider = Provider<DeviceCapabilitiesReader>((

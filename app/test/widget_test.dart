@@ -29,16 +29,16 @@ import 'package:gemma_local/domain/ai/model_manifest_entry.dart';
 import 'package:gemma_local/domain/health/health_metric_type.dart';
 
 void main() {
-  testWidgets('renders simple in-memory chat shell', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('renders model setup before chat', (WidgetTester tester) async {
     await _pumpTestApp(tester);
 
-    expect(find.text('Gemma Health Coach'), findsOneWidget);
-    expect(find.byKey(const ValueKey<String>('gemma_prompt_input')), findsOne);
-    expect(find.text('Ask'), findsOneWidget);
-    expect(find.text('Prepare model'), findsNothing);
-    expect(find.text('Apple Health'), findsNothing);
+    expect(find.text('Models'), findsOneWidget);
+    expect(find.text('Choose Local Gemma'), findsOneWidget);
+    expect(find.text('Gemma 4 E2B Core ML'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('model_prepare_button')),
+      findsOne,
+    );
   });
 
   testWidgets('auto prepares Gemma and renders a text answer', (
@@ -46,6 +46,10 @@ void main() {
   ) async {
     await _pumpTestApp(tester);
 
+    await tester.tap(
+      find.byKey(const ValueKey<String>('model_prepare_button')),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey<String>('gemma_ask_button')));
     await tester.pumpAndSettle();
 
@@ -59,10 +63,10 @@ void main() {
     final preparer = _FakeArtifactPreparer(isReady: false);
     await _pumpTestApp(tester, artifactPreparer: preparer);
 
-    final button = tester.widget<FilledButton>(
-      find.byKey(const ValueKey<String>('gemma_ask_button')),
+    await tester.tap(
+      find.byKey(const ValueKey<String>('model_prepare_button')),
     );
-    expect(button.onPressed, isNull);
+    await tester.pumpAndSettle();
     expect(find.textContaining('Local Gemma model is missing'), findsOneWidget);
   });
 
@@ -86,6 +90,9 @@ void main() {
       modelConnectionController: modelConnectionController,
       settle: false,
     );
+    await tester.tap(
+      find.byKey(const ValueKey<String>('model_prepare_button')),
+    );
     await tester.pump(const Duration(milliseconds: 10));
     await tester.pump();
 
@@ -100,8 +107,8 @@ void main() {
       find.byKey(const ValueKey<String>('gemma_retry_button')),
       findsNothing,
     );
-    final button = tester.widget<FilledButton>(
-      find.byKey(const ValueKey<String>('gemma_ask_button')),
+    final button = tester.widget<OutlinedButton>(
+      find.byKey(const ValueKey<String>('model_open_chat_button')),
     );
     expect(button.onPressed, isNotNull);
   });
@@ -206,6 +213,10 @@ Widget _testApp({
       demoChatControllerProvider.overrideWith((Ref ref) async {
         return _testDemoChatController(artifactPreparer: artifactPreparer);
       }),
+      modelCatalogProvider.overrideWith((Ref ref) => const _FakeCatalog()),
+      deviceCapabilitiesReaderProvider.overrideWith(
+        (Ref ref) => const _FakeDeviceCapabilitiesReader(),
+      ),
       if (healthAuthorizationService != null)
         healthAuthorizationServiceProvider.overrideWithValue(
           healthAuthorizationService,

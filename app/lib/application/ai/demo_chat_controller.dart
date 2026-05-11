@@ -58,7 +58,9 @@ class DemoChatController {
   Stream<ModelInstallProgress> ensureModelReady({
     String preferredModelId = defaultPreferredModelId,
   }) {
-    return _lifecycleService.ensureDemoModelReady();
+    return _lifecycleService.ensureDemoModelReady(
+      preferredModelId: preferredModelId,
+    );
   }
 
   Future<void> cancelActiveGeneration() {
@@ -84,7 +86,9 @@ class DemoChatController {
     final budgetPrompt =
         localHealthAgentService?.budgetPromptFor(normalizedPrompt) ??
         normalizedPrompt;
-    final model = await _selectModel();
+    final model = await _selectModel(
+      preferredModelId: status.loadedModelId ?? defaultPreferredModelId,
+    );
     final config = _generationBudgetPolicy.buildConfig(
       model: model,
       prompt: budgetPrompt,

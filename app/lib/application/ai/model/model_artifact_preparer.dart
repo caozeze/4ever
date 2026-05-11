@@ -15,3 +15,11 @@ abstract interface class ModelArtifactPreparer {
     required String targetPath,
   });
 }
+
+abstract interface class ModelArtifactInstaller
+    implements ModelArtifactPreparer {
+  Future<ModelArtifactReadiness> prepare({
+    required ModelManifestEntry model,
+    required String targetPath,
+  });
+}

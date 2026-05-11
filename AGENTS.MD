@@ -1,23 +1,69 @@
 # 端侧 AI App 技术栈
 
-版本：0.1
+版本：0.3
 
-项目形态：iOS / Android 双端 Flutter App，第一版 **offline-only / 本地优先**。端侧 AI、本地健康数据管理、本地隐私脱敏和本地加密是当前主线；云端分析只作为 future optional 能力，默认关闭，不参与第一版 demo。
+项目形态：iOS / Android 双端 Flutter App，当前分支是 **iOS-first / offline-only / 本地优先** 的实机验证与模型管理产品化阶段。端侧 AI、本地 HealthKit 聚合读取、本地健康 Agent 编排、隐私边界、本地模型下载/加载/切换是当前主线；Android、SQLCipher 健康数据持久化、完整隐私审计和云端分析仍作为后续能力，默认不参与当前 demo。
 
 ## 0. 背景与技术判断
 
 本项目选择 **Flutter** 作为跨平台 App 主框架，使用 **Dart** 实现 UI、业务编排、健康画像、隐私脱敏和本地状态管理。Android 与 iOS 端的系统级能力通过原生插件接入：Android 使用 **Kotlin**，iOS 使用 **Swift**。
 
-端侧模型以 **Gemma 4 E4B** 为主模型，已在iPhone 17 上验证 安卓端待确认 
+当前分支已进入 `codex-feature-gemma` 阶段，最新提交 `c9aa121`（2026-05-11 02:11:36 +0800）记录为“本地 Gemma 健康 Agent 阶段状态”。本阶段已经完成 iPhone 17 实机路径验证：Flutter Chat UI -> 本地 Gemma 4 E2B Core ML bundle -> CoreML-LLM Swift adapter -> HealthKit 聚合工具 -> 中文健康问答。当前工作区在此基础上新增了 iOS 模型选择页和 Core ML bundle 下载流程，入口从直接进入 Chat 调整为先进入 `/models`。Android 端仍待确认。
 
 ```
-Gemma 4 是默认目标模型。
+Gemma 4 是默认目标模型族。
+当前 iOS 默认实机模型是 Gemma 4 E2B Core ML n1024 bundle。
+Gemma 4 E4B 是高内存/高质量档位，已接入 iOS 选择与下载流程，但还未完成完整下载和实机初始化验证。
 Gemma 4 不直接暴露给业务层。
 业务层只依赖统一的 LlmRuntime 接口。
 Android / iOS 各自实现原生 runtime adapter。
-Gemma 4 E4B / E2B 档位和 runtime adapter 必须可替换。
-第一版不做 server、不做云端分析、不做云端同步。
+iOS 当前 adapter 是 Swift + CoreML-LLM + Core ML / ANE。
+Android 计划 adapter 仍是 Kotlin + LiteRT-LM。
+Gemma 4 E4B / E2B 档位和 runtime adapter 必须可替换，用户必须能在 Chat 前显式选择、下载、加载和切换。
+当前阶段不做 server、不做云端分析、不做云端同步。
 任何云端能力必须后续单独设计、默认关闭、用户显式 opt-in。
+```
+
+## 当前分支实现状态
+
+当前分支不是最初的空壳规划，而是已经跑通的新阶段代码。后续 agent 修改前必须按以下事实理解仓库：
+
+```
+当前主线：
+  iOS Flutter app
+  /models 模型选择页
+  Gemma 4 E2B / E4B Core ML bundle manifest
+  HuggingFace Core ML bundle 下载
+  CoreML-LLM Swift Package
+  MethodChannel LlmRuntime adapter
+  HealthKit 聚合读取
+  本地 Health Agent planner / prompt builder / tool routing
+  Chat 页面实机问答 demo
+
+已实现入口：
+  app/lib/app.dart
+  app/lib/presentation/model/model_setup_page.dart
+  app/lib/presentation/chat/chat_page.dart
+  app/lib/presentation/health/health_permissions_page.dart
+  app/lib/application/ai/demo_chat_controller.dart
+  app/lib/application/ai/local_health_agent_service.dart
+  app/lib/application/ai/health_agent_planner.dart
+  app/lib/application/ai/compact_health_prompt_builder.dart
+  app/lib/application/ai/model/model_connection_controller.dart
+  app/lib/application/ai/model/model_lifecycle_service.dart
+  app/lib/data/model/model_artifact_preparers.dart
+  app/ios/Runner/NativeBridge/LlmRuntimeHostApiAdapter.swift
+  app/ios/Runner/NativeBridge/HealthKitHostApiAdapter.swift
+  app/tooling/download_coreml_bundle.dart
+
+当前限制：
+  Android runtime provider 尚未实现，不能声称双端已跑通。
+  iOS token streaming 尚未接通，generateOnce 是当前实机路径。
+  iOS CoreML bundle 下载已接入 Dart 模型生命周期，但完整性仍采用 readiness check，不是完整 per-file hash manifest。
+  E2B Core ML n1024 已完成完整本地下载验证；E4B 已接入流程和 readiness 规则，但尚未完成完整下载/实机初始化验证。
+  当前下载器使用 HuggingFace tree/resolve API、Dio 下载和 HttpClient fallback，尚未接入 background_downloader 的断点续传 UI。
+  model_registry 仍为 Application Support/model_registry.json。
+  server/ 仍是 future optional 预留，不属于当前离线 demo。
 ```
 
 ## 1. 总体架构
@@ -98,18 +144,18 @@ Flutter 官方支持通过 platform channel 调用 Android Kotlin / Java 和 iOS
 | App 框架 | Flutter | 双端 UI、业务编排、页面导航 |
 | 主语言 | Dart | Flutter 业务层、领域模型、隐私处理 |
 | Android 原生 | Kotlin | Gemma runtime、Health Connect、Keystore、后台任务 |
-| iOS 原生 | Swift + ObjC++ / C++ | Flutter/Pigeon 入口、LiteRT-LM C++ bridge、HealthKit、Keychain、BackgroundTasks |
+| iOS 原生 | Swift | Flutter MethodChannel/Pigeon 入口、CoreML-LLM adapter、HealthKit、Keychain、BackgroundTasks |
 | 状态管理 | Riverpod | 异步状态、依赖注入、测试友好 |
 | 路由 | go_router | 声明式路由、deep link、ShellRoute |
 | 数据模型 | freezed + json_serializable | 不可变模型、序列化、copyWith |
-| Native Bridge | Pigeon | 类型安全平台桥接 |
+| Native Bridge | Pigeon 优先；当前 iOS runtime/HealthKit 用 MethodChannel | 类型安全接口仍是目标；实机 MVP 允许保留已验证 MethodChannel adapter |
 | 本地数据库 | SQLCipher SQLite | 文件级加密数据库 |
 | Flutter DB 包 | sqflite_sqlcipher | Android / iOS / macOS 支持，openDatabase 支持 password 参数；包文档要求 release 混淆时保留 SQLCipher 类。([Dart packages](https://pub.dev/packages/sqflite_sqlcipher?utm_source=chatgpt.com)) |
 | 密钥存储 | flutter_secure_storage + 原生 Keychain / Keystore | Flutter 层存储小型敏感数据；关键密钥应由原生层生成和保护 |
 | 健康数据 | HealthKit + Health Connect | iOS 与 Android 系统健康数据源 |
 | 健康数据 Flutter 包 | health | 可作为早期 adapter；该包是 Apple HealthKit 与 Google Health Connect 的 wrapper。([Dart packages](https://pub.dev/packages/health?utm_source=chatgpt.com)) |
-| 端侧模型 | Gemma 4 E4B | 默认主模型，Gemma 4 E2B 作为低内存设备备选 |
-| 模型运行时 | LiteRT-LM | Android 用 Kotlin API；iOS 用 Swift/Pigeon 入口 + ObjC++/C++ bridge；平台端封装，不暴露给业务层 |
+| 端侧模型 | Gemma 4 E2B / E4B | 当前 iOS 默认 Gemma 4 E2B Core ML n1024；E4B 作为高内存/高质量档位 |
+| 模型运行时 | iOS CoreML-LLM；Android LiteRT-LM planned | iOS 用 Swift + CoreML-LLM + Core ML/ANE；Android 计划用 Kotlin + LiteRT-LM；平台端封装，不暴露给业务层 |
 | 云端服务 | Future optional | 第一版不启用；后续如加入，只能接收用户确认后的脱敏结构化摘要 |
 | 云端 AI | Future optional | 第一版不启用；不得接收原始健康数据、聊天、日记或身份标识 |
 | CI/CD | GitHub Actions + Fastlane | 静态检查、测试、构建、发布 |
@@ -422,7 +468,7 @@ UI 不得直接访问 Gemma runtime。
 
 ## 4. Native Bridge 规范
 
-### 4.1 Pigeon 优先
+### 4.1 Pigeon 优先，实机 MVP 保留已验证 MethodChannel
 
 本项目使用 Pigeon 定义跨平台接口。手写 `MethodChannel` 仅用于：
 
@@ -430,9 +476,24 @@ UI 不得直接访问 Gemma runtime。
 token streaming
 高频事件流
 Pigeon 不支持或实现成本明显过高的特殊场景
+已经完成实机验证且迁移 Pigeon 会增加当前阶段风险的 runtime / HealthKit adapter
 ```
 
 Flutter 文档说明，Pigeon 可生成结构化、类型安全的平台消息代码，避免 host 与 client 手动匹配字符串、参数名和数据类型。([Flutter 文档](https://docs.flutter.dev/platform-integration/platform-channels?sid=TMUlf1&utm_source=chatgpt.com))
+
+当前分支的 iOS `LlmRuntime`、`HealthDataApi`、`DeviceCapabilitiesApi` 已通过
+`MethodChannel` 跑通实机路径。后续重构到 Pigeon 必须是单独任务，并保持以下
+业务接口不变：
+
+```
+LlmRuntime
+HealthDataGateway
+DeviceCapabilitiesReader
+ModelLifecycleService
+DemoChatController
+```
+
+禁止为了“纯 Pigeon 化”破坏当前 iPhone 17 已验证路径。
 
 ### 4.2 LLM Runtime Host API
 
@@ -555,39 +616,80 @@ Dart 层不得解析原生 SDK 原始错误字符串作为业务逻辑依据。
 
 ### 5.1 模型策略
 
-默认目标模型：
+当前 iOS 实机默认目标模型：
 
 ```
-Gemma 4 E4B
+gemma-4-e2b-it-coreml-ios
+Gemma 4 E2B Core ML
+revision: n1024
+runtime: coreml_llm
+artifact_type: coreml_bundle
+repo: mlboydaisuke/gemma-4-E2B-coreml
 ```
 
-低内存设备备选：
+当前 iOS 高质量档位：
 
 ```
-Gemma 4 E2B
+gemma-4-e4b-it-coreml-ios
+Gemma 4 E4B Core ML
+revision: main
+runtime: coreml_llm
+artifact_type: coreml_bundle
+repo: mlboydaisuke/gemma-4-E4B-coreml
 ```
 
-Edge Gallery 的 Android allowlist 中，Gemma 4 E2B 模型文件约 2.58GB，最低设备内存 8GB，支持图像、音频、thinking、32K context；Gemma 4 E4B 约 3.65GB，最低设备内存 12GB，同样支持图像、音频、thinking、32K context。
+Android 计划目标：
 
-第一版 demo 的唯一目标是跑通以下闭环：
+```
+gemma-4-e4b-it-litert-android
+gemma-4-e2b-it-litert-android
+runtime: litert_lm
+artifact_type: litertlm_file
+```
+
+Edge Gallery 的 Android allowlist 中，Gemma 4 E2B 模型文件约 2.58GB，最低设备内存 8GB，支持图像、音频、thinking、32K context；Gemma 4 E4B 约 3.65GB，最低设备内存 12GB，同样支持图像、音频、thinking、32K context。当前 iOS Core ML n1024 实机路径以文本问答为主，`max_context_tokens` 以 manifest 中平台 entry 为准。
+
+当前阶段 demo 已从“模型 smoke test”推进到“本地健康 Agent 实机问答”，并新增 Chat 前模型选择/下载/切换页。目标闭环是：
 
 ```
 manifest
--> 选择 Gemma 4 E4B/E2B
+-> 选择 platform runtime artifact
 -> 检查内存/磁盘
--> background_downloader 下载
--> crypto SHA-256 校验
+-> /models 页面选择 Gemma 4 E2B 或 E4B
+-> 下载/准备本地 CoreML bundle 或 Android .litertlm 文件
+-> readiness check 或 SHA-256 校验
 -> 写 model_registry.json
 -> LlmRuntime.initialize
 -> smoke test
 -> demo chat
+-> health prompt planner
+-> HealthKit aggregate tool
+-> local Gemma answer
 ```
 
-双端共用 Dart/Flutter 模型管理流程、`.litertlm` 模型格式和 `LlmRuntime`
-抽象。Android 与 iOS 不共用 Kotlin/Swift 代码，但底层均以 LiteRT-LM 为
-目标 runtime。iOS 第一版不等待 Swift-native SDK，采用 Swift/Pigeon 入口
-+ ObjC++/C++ wrapper 调 LiteRT-LM C++ API；Swift API 成熟后仅替换 iOS
-adapter。
+双端共用 Dart/Flutter 模型管理流程、artifact manifest、model registry 和
+`LlmRuntime` 抽象。Android 与 iOS 不共用 Kotlin/Swift 代码，也不要求共用
+artifact 格式：
+
+```
+iOS:
+  CoreML bundle
+  Swift CoreML-LLM adapter
+  Core ML / ANE 优先
+  当前 E2B 下载地址来自 HuggingFace tree/resolve API:
+    https://huggingface.co/api/models/mlboydaisuke/gemma-4-E2B-coreml/tree/n1024?recursive=1
+    https://huggingface.co/mlboydaisuke/gemma-4-E2B-coreml/resolve/n1024/{path}?download=true
+  当前 E4B 下载地址来自 HuggingFace tree/resolve API:
+    https://huggingface.co/api/models/mlboydaisuke/gemma-4-E4B-coreml/tree/main?recursive=1
+    https://huggingface.co/mlboydaisuke/gemma-4-E4B-coreml/resolve/main/{path}?download=true
+
+Android:
+  .litertlm single file
+  Kotlin LiteRT-LM adapter
+```
+
+业务层不得依赖 CoreML-LLM、LiteRT-LM、SPM、Kotlin、Swift runtime 或具体
+artifact 格式。
 
 ### 5.2 Runtime 抽象
 
@@ -637,37 +739,76 @@ final response = await ref.read(llmRuntimeProvider).generateOnce(
 
 ### 5.3 模型 manifest
 
-`assets/model_manifest.json`
+`app/assets/model_manifest.json`
+
+当前 manifest 是 artifact-based schema，不再是单一 `.litertlm` schema。必须保留
+`runtime`、`artifact_type`、`revision`、`selection_priority` 等字段。
 
 ```json
 {
   "schema_version": "1.0",
   "models": [
     {
-      "id": "gemma-4-e2b-it",
-      "display_name": "Gemma 4 E2B",
-      "file_name": "gemma-4-E2B-it.litertlm",
-      "sha256": "TO_BE_FILLED",
+      "id": "gemma-4-e2b-it-coreml-ios",
+      "display_name": "Gemma 4 E2B Core ML",
+      "provider": "mlboydaisuke",
+      "model_id": "mlboydaisuke/gemma-4-E2B-coreml",
+      "repo_id": "mlboydaisuke/gemma-4-E2B-coreml",
+      "runtime": "coreml_llm",
+      "artifact_type": "coreml_bundle",
+      "revision": "n1024",
+      "source_commit": "n1024",
+      "allow_patterns": [
+        "model_config.json",
+        "hf_model/config.json",
+        "hf_model/tokenizer.json",
+        "hf_model/tokenizer_config.json",
+        "swa/chunk1.mlmodelc/**",
+        "swa/chunk2_3way.mlmodelc/**",
+        "swa/chunk3_3way.mlmodelc/**",
+        "*.bin",
+        "*.npy"
+      ],
+      "sha256": "BUNDLE_READINESS_CHECK",
       "size_bytes": 2583085056,
       "min_memory_gb": 8,
-      "modalities": ["text", "image", "audio"],
+      "min_free_disk_bytes": 5166170112,
+      "modalities": ["text"],
+      "supports_thinking": true,
+      "max_context_tokens": 2048,
+      "default": true,
+      "platforms": ["ios"],
+      "selection_priority": 10
+    },
+    {
+      "id": "gemma-4-e4b-it-coreml-ios",
+      "display_name": "Gemma 4 E4B Core ML",
+      "provider": "mlboydaisuke",
+      "model_id": "mlboydaisuke/gemma-4-E4B-coreml",
+      "repo_id": "mlboydaisuke/gemma-4-E4B-coreml",
+      "runtime": "coreml_llm",
+      "artifact_type": "coreml_bundle",
+      "revision": "main",
+      "source_commit": "main",
+      "allow_patterns": [
+        "*.json",
+        "*.mlmodelc/**",
+        "*.mlpackage/**",
+        "*.bin",
+        "*.npy",
+        "*.txt",
+        "hf_model/**"
+      ],
+      "sha256": "BUNDLE_READINESS_CHECK",
+      "size_bytes": 3654467584,
+      "min_memory_gb": 12,
+      "min_free_disk_bytes": 7308935168,
+      "modalities": ["text"],
       "supports_thinking": true,
       "max_context_tokens": 32000,
       "default": false,
-      "platforms": ["android", "ios"]
-    },
-    {
-      "id": "gemma-4-e4b-it",
-      "display_name": "Gemma 4 E4B",
-      "file_name": "gemma-4-E4B-it.litertlm",
-      "sha256": "TO_BE_FILLED",
-      "size_bytes": 3654467584,
-      "min_memory_gb": 12,
-      "modalities": ["text", "image", "audio"],
-      "supports_thinking": true,
-      "max_context_tokens": 32000,
-      "default": true,
-      "platforms": ["android", "ios"]
+      "platforms": ["ios"],
+      "selection_priority": 20
     }
   ]
 }
@@ -692,25 +833,44 @@ failed
 unloaded
 ```
 
-模型安装流程：
+当前 iOS 模型安装流程：
 
 ```
 1. 检查设备内存与磁盘空间。
-2. 获取模型文件。
-3. 计算 SHA-256。
-4. 校验 manifest。
-5. 写入 model_registry.json。
-6. 初始化原生 runtime。
-7. 执行 smoke test。
-8. 标记 ready。
+2. 若本地 bundle 不完整，进入 downloading。
+3. 通过 HuggingFace tree API 获取 allow_patterns 匹配文件列表。
+4. 通过 HuggingFace resolve URL 逐文件下载，先写入 .download 临时文件，再 rename。
+5. Dio 下载失败时使用 dart:io HttpClient fallback，最多重试 3 次。
+6. 下载后进入 verifying，按 CoreML bundle 必要文件做 readiness check。
+7. 写入 Application Support/model_registry.json。
+8. 如果当前 runtime 已加载其他模型，先 unload。
+9. 调用 LlmRuntime.initialize。
+10. 标记 ready。
 ```
 
-Smoke test：
+当前实现说明：
 
 ```
-Prompt: Reply with the single word: ready
-Expected: output contains "ready"
-Timeout: 30 seconds
+E2B 必要 chunk:
+  chunk1.mlmodelc/coremldata.bin
+  chunk2_3way.mlmodelc/coremldata.bin
+  chunk3_3way.mlmodelc/coremldata.bin
+
+E4B 必要 chunk:
+  chunk1.mlmodelc/coremldata.bin
+  chunk2.mlmodelc/coremldata.bin
+  chunk3.mlmodelc/coremldata.bin
+  chunk4.mlmodelc/coremldata.bin
+
+shared sidecar:
+  model_config.json
+  hf_model/config.json
+  hf_model/tokenizer.json
+  hf_model/tokenizer_config.json
+  embed_tokens*.bin
+  per_layer*.bin
+  cos_*.npy
+  sin_*.npy
 ```
 
 ### 5.5 模型部署注意事项
@@ -725,6 +885,26 @@ Timeout: 30 seconds
 支持删除模型。
 支持 Gemma 4 E2B / E4B 档位切换。
 支持模型完整性校验。
+```
+
+当前代码已支持：
+
+```
+/models 作为 App 初始入口。
+用户在 Chat 前选择 E2B 或 E4B。
+E2B / E4B 均可进入同一下载、校验、加载、切换流程。
+E2B Core ML n1024 已在本地完整下载验证通过。
+切换模型时，如果 runtime 已 ready 且 loadedModelId 不同，会先 unload 再 initialize。
+```
+
+当前代码尚未支持或尚未验证：
+
+```
+background_downloader 断点续传 UI。
+per-file SHA-256 manifest。
+模型删除 UI。
+E4B 完整下载和实机 initialize 验证。
+Android runtime adapter 实机验证。
 ```
 
 如果必须内置模型，需评估：
@@ -788,11 +968,16 @@ Android 原生层职责：
 ```
 步数
 睡眠
-运动分钟
+运动分钟 / Apple Exercise Time
+站立时间
 运动记录
 活动能量
+基础能量
+步行 + 跑步距离
+爬楼层数
 心率
 静息心率
+步行平均心率
 HRV
 体重
 正念分钟
@@ -811,9 +996,26 @@ HRV
 精确位置
 联系人
 原始日记全文
+营养摄入
+呼吸指标
+环境 / 耳机音频暴露
+高心率 / 低心率 / 心律不齐事件
 ```
 
 若后续引入高敏感医疗数据，必须单独设计权限页、隐私页、数据生命周期和云端策略。
+
+当前 iOS `HealthKitHostApiAdapter` 已实现聚合读取，但权限请求必须持续收敛到
+`HealthMetricType` 实际使用集合。不得为了“以后可能用到”扩大 HealthKit
+授权范围。每新增一个 HealthKit 类型，必须同步更新：
+
+```
+HealthMetricType
+HealthAgentPlanner
+HealthSummaryService period 支持规则
+HealthKitHostApiAdapter.SummaryDescriptor
+权限页文案
+单元测试
+```
 
 ### 6.4 Domain Model
 
@@ -821,17 +1023,19 @@ HRV
 enum HealthMetricType {
   steps,
   sleepSession,
-  sleepStage,
-  exerciseSession,
+  workoutSession,
   activeEnergy,
+  basalEnergy,
+  exerciseTime,
+  standTime,
+  distanceWalkingRunning,
+  flightsClimbed,
   heartRate,
   restingHeartRate,
+  walkingHeartRateAverage,
   hrv,
   weight,
   mindfulMinutes,
-  mood,
-  stress,
-  energy,
 }
 
 enum SensitivityLevel {
@@ -1348,21 +1552,30 @@ Output:
 ### 10.4 Prompt 版本管理
 
 ```
-所有 prompt 必须放在 application/ai/prompts。
-每个 prompt 必须有 prompt_version。
-daily_summaries 必须记录生成时使用的 prompt_version。
+当前阶段 prompt 集中在 application/ai/compact_health_prompt_builder.dart。
+后续产品化 prompt 应迁移到 application/ai/prompts。
+每个稳定 prompt 必须有 prompt_version。
+daily_summaries 或持久化 insight 必须记录生成时使用的 prompt_version。
 prompt 更新必须附带 regression test。
 prompt 不得硬编码用户原始敏感数据离开本机。
 ```
 
 ### 10.5 Agent Skills 规范
 
-本项目借鉴 Google AI Edge Gallery 的 Agent Skills 设计，但必须改造成隐私优先、受控工具系统。
+本项目借鉴 Google AI Edge Gallery 的 Agent Skills 设计，但必须改造成隐私优先、受控工具系统。当前分支没有通用动态 skill runtime；已实机验证的是受控的一阶本地工具编排：
+
+```
+HealthAgentPlanner
+  -> HealthSummaryService.getHealthSummary
+  -> HealthKit aggregate read
+  -> CompactHealthPromptBuilder
+  -> LlmRuntime.generateOnce
+```
 
 核心原则：
 
 ```
-AgentRuntime 只依赖 LlmRuntime。
+AgentRuntime / LocalHealthAgentService 只依赖 LlmRuntime 和 application service。
 AgentTool 只调用 application service 或 repository interface。
 UI 不得直接执行 tool。
 tool 不得直接调用 Pigeon、数据库、HealthKit、Health Connect、LiteRT-LM、Gemma runtime。
@@ -1371,7 +1584,13 @@ tool result 返回给模型前必须经过敏感度判断。
 需要改变数据、删除数据、上传数据、调用外部服务的 tool 必须用户确认。
 ```
 
-第一阶段只允许 first-party skills：
+当前阶段已允许且已实现的 first-party tool：
+
+```
+get_health_summary
+```
+
+后续第一方 skills 候选：
 
 ```
 get_recent_health_summary
@@ -1398,6 +1617,10 @@ suggest_non_medical_habit_plan
 ```
 docs/AGENT_SKILLS_ARCHITECTURE.md
 ```
+
+后续若引入 `dartantic_ai` 的通用 tool calling，必须保持当前 planner-first
+路径可回退。模型输出的 tool call 不可信，必须经过本地 schema 解析、工具白名单
+和参数校验后才允许执行。
 
 ## 11. 医疗与安全边界
 
@@ -1468,6 +1691,15 @@ This app provides general wellbeing insights based on data you choose to process
 必须具备：
 
 ```
+Model Setup
+  - 当前 App 初始入口为 /models
+  - 用户先选择 Gemma 4 E2B 或 E4B，再进入 Chat
+  - 显示模型大小、内存要求、磁盘要求和本地连接状态
+  - 支持 Download and Load
+  - 支持已 ready 后 Open Chat
+  - 支持切换模型时重新加载选中模型
+  - 下载或加载失败时显示错误并允许 Retry
+
 Onboarding
   - 说明端侧 AI
   - 说明健康数据权限
@@ -1480,11 +1712,8 @@ Health Permission
   - 明确哪些数据只在本地处理
 
 Model Status
-  - 当前模型
-  - 模型大小
-  - 本地可用性
-  - 离线可用状态
-  - Gemma 4 E4B / E2B 档位状态
+  - 当前模型由 Model Setup 页面承载
+  - 后续如保留独立 Model Status 页面，必须复用同一 model lifecycle/controller 状态，不得另写一套下载逻辑
 
 Dashboard
   - 睡眠
@@ -1570,8 +1799,9 @@ sqflite_sqlcipher 文档明确要求 release code shrinking 下添加该规则�
 ```
 Swift
 Flutter iOS embedding
-Pigeon generated HostApi
-Gemma 4 runtime adapter
+MethodChannel adapter for current verified device path; Pigeon remains target for later typed bridge
+CoreML-LLM Swift Package
+Gemma 4 Core ML runtime adapter
 HealthKit
 Keychain
 CryptoKit
@@ -1603,6 +1833,24 @@ iOS 17.0+
 
 若当前版本不做语音输入，不要申请麦克风权限。
 
+### 14.4 当前 iOS 实机路径保护
+
+当前 iOS runtime 入口是：
+
+```
+app/lib/core/native/ios_llm_runtime.dart
+app/ios/Runner/NativeBridge/LlmRuntimeHostApiAdapter.swift
+```
+
+当前 HealthKit 入口是：
+
+```
+app/lib/data/health/ios_health_data_gateway.dart
+app/ios/Runner/NativeBridge/HealthKitHostApiAdapter.swift
+```
+
+后续 agent 不得把 iOS runtime 改回 LiteRT-LM / ObjC++ / C++ bridge 方案，除非用户明确要求做 fallback。CoreML-LLM adapter 的 compute units、timeout、bundle readiness 规则属于实机验证路径的一部分，修改必须附带设备验证说明。
+
 ## 15. AI Coding Agent 规则
 
 本节是给 Codex / Claude 读取的约束。Agent 必须遵守。
@@ -1619,11 +1867,25 @@ iOS 17.0+
 不得修改 generated 文件。
 不得删除 migration。
 不得在未更新测试的情况下修改 prompt。
-第一版不得引入云端依赖；后续云端能力必须单独设计、默认关闭并经用户 opt-in。
+当前阶段不得引入云端依赖；后续云端能力必须单独设计、默认关闭并经用户 opt-in。
 不得引入广告、analytics SDK 读取健康数据。
+不得把已实机验证的 iOS CoreML-LLM 路径改回旧 LiteRT-LM iOS 方案。
+不得扩大 HealthKit 权限范围，除非同步更新产品文案、隐私边界和测试。
 ```
 
 ### 15.2 修改 native bridge 的流程
+
+当前实机路径允许保留 MethodChannel。若修改的是当前 MethodChannel adapter：
+
+```
+1. 保持 Dart 业务接口不变。
+2. 更新 MethodChannel payload schema。
+3. 更新 Swift / Kotlin adapter。
+4. 添加 adapter 单元测试或实机 smoke test。
+5. 更新本文件或相关 docs。
+```
+
+若是新建或迁移 Pigeon bridge：
 
 ```
 1. 修改 app/pigeon/*.dart。
@@ -1641,11 +1903,12 @@ iOS 17.0+
 1. 在 HealthMetricType 添加类型。
 2. 添加 sensitivity classification。
 3. 添加 HealthKit 映射。
-4. 添加 Health Connect 映射。
+4. 如该类型进入 Android 范围，添加 Health Connect 映射。
 5. 添加 permission 文案。
 6. 添加数据库 migration 如有必要。
 7. 添加 PrivacyFilter 测试。
 8. 更新用户隐私说明。
+9. 确认 HealthKitHostApiAdapter.allReadTypes 没有包含未使用类型。
 ```
 
 ### 15.4 新增 Future Optional 外发字段的流程
@@ -1751,9 +2014,12 @@ unload 成功
 ### Phase 1：基础产品化
 
 ```
-完善模型管理器。
-支持模型下载、删除、校验。
-支持 Gemma 4 E4B / E2B 档位选择。
+完善模型管理器剩余能力。
+已支持 iOS E2B / E4B 选择、下载流程、加载和切换。
+补齐 background_downloader 断点续传 UI。
+补齐模型删除。
+补齐 per-file hash 校验。
+完成 E4B 完整下载和实机 initialize 验证。
 完成本地加密数据库。
 完成 HealthKit / Health Connect 原生 adapter。
 完成隐私预览。
