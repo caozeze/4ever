@@ -12,7 +12,9 @@ final llmRuntimeProvider = Provider<LlmRuntime>((Ref ref) {
     return IosLlmRuntime();
   }
 
-  throw UnsupportedError('LlmRuntime is not implemented for this platform yet.');
+  throw UnsupportedError(
+    'LlmRuntime is not implemented for this platform yet.',
+  );
 });
 
 final healthDataApiProvider = Provider<IosHealthDataApi>((Ref ref) {

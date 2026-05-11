@@ -21,8 +21,10 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $AppDir = Join-Path $RepoRoot "app"
 $ServerDir = Join-Path $RepoRoot "server"
-$PubCacheBin = Join-Path $env:LOCALAPPDATA "Pub\Cache\bin"
-$DartSdkBin = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages\Google.DartSDK_Microsoft.Winget.Source_8wekyb3d8bbwe\dart-sdk\bin"
+$ToolRoot = if ($env:FOREVERHEALTH_TOOL_ROOT) { $env:FOREVERHEALTH_TOOL_ROOT } else { "D:\DevTools\foreverhealth" }
+$DartSdkBin = Join-Path $ToolRoot "dart-sdk\bin"
+$PubCacheRoot = if ($env:PUB_CACHE) { $env:PUB_CACHE } else { Join-Path $ToolRoot "pub-cache" }
+$PubCacheBin = Join-Path $PubCacheRoot "bin"
 
 $env:Path = "$DartSdkBin;$PubCacheBin;$env:Path"
 $Fvm = Join-Path $PubCacheBin "fvm.bat"

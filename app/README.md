@@ -1,17 +1,14 @@
-# gemma_local
+# Gemma Local App
 
-A new Flutter project.
+Flutter client for the iOS-first model MVP.
 
-## Getting Started
+The current app screen lets a user prepare the recommended Gemma 4 E2B Core ML
+bundle, load it through the shared `LlmRuntime`, run the smoke test, and submit a
+local text prompt. This is the current MVP acceptance path.
 
-This project is a starting point for a Flutter application.
+Gemma 4 E4B Core ML is listed as pending real-device validation and is not
+selectable until the full E4B iPhone path is verified.
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Planned product areas such as Apple Health import, diet/photo calorie analysis,
+chronic condition workflows, sleep management, reminders, and daily/weekly
+reports are not implemented in this app yet.

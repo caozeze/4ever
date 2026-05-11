@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/john-rocky/CoreML-LLM",
       "state" : {
-        "revision" : "9447e7273a10e3c3d07e0ccdd17561bf8b8aa313",
-        "version" : "1.7.0"
+        "revision" : "c69a4e9bb8f9574f7b332babd93bb745c1022c11",
+        "version" : "1.9.0"
       }
     },
     {

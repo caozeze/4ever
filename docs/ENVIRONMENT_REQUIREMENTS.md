@@ -70,15 +70,11 @@ Intel Mac compatibility note:
 
 - Intel Macs remain supported for Flutter/Dart work and should support iOS
   simulator builds for shared development.
-- As of 2026-04-28, CoreML-LLM v1.7.0 builds for iPhone device targets on the
-  current Intel Mac environment, but fails for x86_64 iOS Simulator because the
-  x86_64 simulator SDK lacks the Accelerate
-  `vDSP.convertElements(Float16 -> Float)` overload used by CoreML-LLM.
-- The planned fix is a small CoreML-LLM fork/PR that adds an x86_64 simulator
-  fallback conversion path. The app should use that fork branch until upstream
-  merges and tags the fix.
-- Apple Silicon teammates must still verify the arm64 simulator path after the
-  fork lands.
+- CoreML-LLM PR 153 was merged upstream, and this app now pins the official
+  `john-rocky/CoreML-LLM` package at `v1.9.0`, which includes the x86_64
+  simulator Float16 conversion fallback.
+- Intel and Apple Silicon simulator paths still need Codemagic or macOS/Xcode
+  verification after Swift Package resolution.
 
 The iOS owner should verify:
 
@@ -132,6 +128,19 @@ From the repository root:
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\scripts\setup-windows-dev.ps1
+```
+
+By default, the Windows setup stores the project toolchain and caches under:
+
+```text
+D:\DevTools\foreverhealth
+```
+
+This keeps Dart, pub cache, FVM cache, Flutter SDKs, and uv-managed Python
+installs off the C drive. To use another drive or directory:
+
+```powershell
+.\scripts\setup-windows-dev.ps1 -ToolRoot "E:\DevTools\foreverhealth"
 ```
 
 To also install Android Studio:
@@ -205,3 +214,27 @@ If the backend uses `pyproject.toml`, prefer:
 ```powershell
 uv sync
 ```
+
+## Codemagic iOS CI
+
+The repository includes `codemagic.yaml` at the repository root. The first
+workflow is intentionally unsigned:
+
+```text
+ios-unsigned-ci
+```
+
+Purpose:
+
+- verify Flutter dependencies, analysis, and tests on Codemagic;
+- resolve Swift Package dependencies on macOS/Xcode;
+- verify the iOS simulator build;
+- verify an iOS device build without signing.
+
+This workflow does not require Apple Developer signing assets. It is the first
+CI gate for the official CoreML-LLM package pin and iOS project configuration.
+
+After an Apple Developer Program account is available, add a second signed
+workflow for TestFlight or Ad Hoc distribution. That workflow should configure
+Codemagic iOS code signing with an App Store Connect API key, certificate, and
+provisioning profile for the app bundle identifier.

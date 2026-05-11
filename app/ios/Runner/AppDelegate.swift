@@ -5,6 +5,7 @@ import UIKit
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let nativeBridgeRegistry = NativeBridgeRegistry()
   private let backgroundTaskHostApi = BackgroundTaskHostApiAdapter()
+  private var agentTraceLogChannel: FlutterMethodChannel?
 
   override func application(
     _ application: UIApplication,
@@ -21,6 +22,23 @@ import UIKit
     ) else {
       return
     }
-    nativeBridgeRegistry.register(with: registrar.messenger())
+    let messenger = registrar.messenger()
+    nativeBridgeRegistry.register(with: messenger)
+    let channel = FlutterMethodChannel(
+      name: "com.gemmalocal.gemmaLocal/agent_trace_log",
+      binaryMessenger: messenger
+    )
+    channel.setMethodCallHandler { call, result in
+      guard call.method == "log" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      if let args = call.arguments as? [String: Any],
+         let line = args["line"] as? String {
+        NSLog("%@", line)
+      }
+      result(nil)
+    }
+    agentTraceLogChannel = channel
   }
 }
